@@ -112,12 +112,6 @@ export default function Login() {
               <Link to="/register" className="text-primary hover:underline font-medium">Create one</Link>
             </p>
 
-            {/* Demo credentials */}
-            <div className="mt-4 p-3 bg-muted/50 rounded-lg text-xs text-muted-foreground">
-              <p className="font-medium mb-1">Demo credentials:</p>
-              <p>Email: admin@ascendia.com</p>
-              <p>Password: admin123</p>
-            </div>
           </CardContent>
         </Card>
       </motion.div>
