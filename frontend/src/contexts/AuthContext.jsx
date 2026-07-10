@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, useEffect, useCallback } from 'react'
-import api from '@/services/api'
+import api, { saveToken, getToken, clearToken } from '@/services/api'
 import toast from 'react-hot-toast'
 
 const AuthContext = createContext(null)
@@ -16,14 +16,22 @@ const ROLE_LEVELS = {
 }
 
 export const AuthProvider = ({ children }) => {
-  const [user, setUser] = useState(null)
+  const [user, setUser]       = useState(null)
   const [loading, setLoading] = useState(true)
 
   const fetchMe = useCallback(async () => {
+    // If no token stored, skip the network call — user is not logged in
+    if (!getToken()) {
+      setUser(null)
+      setLoading(false)
+      return
+    }
     try {
       const { data } = await api.get('/auth/me')
       setUser(data.user)
     } catch {
+      // Token is invalid or expired — clear it so we don't loop
+      clearToken()
       setUser(null)
     } finally {
       setLoading(false)
@@ -34,12 +42,14 @@ export const AuthProvider = ({ children }) => {
 
   const login = async (credentials) => {
     const { data } = await api.post('/auth/login', credentials)
+    if (data.token) saveToken(data.token)
     setUser(data.user)
     return data
   }
 
   const register = async (userData) => {
     const { data } = await api.post('/auth/register', userData)
+    if (data.token) saveToken(data.token)
     setUser(data.user)
     return data
   }
@@ -48,6 +58,7 @@ export const AuthProvider = ({ children }) => {
     try {
       await api.post('/auth/logout')
     } catch {}
+    clearToken()
     setUser(null)
     toast.success('Logged out successfully')
   }
