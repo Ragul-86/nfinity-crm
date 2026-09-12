@@ -273,6 +273,49 @@ export const INTEGRATIONS = [
     ],
     displayFields: ['webhookUrl'],
   },
+
+  // ── GOOGLE SHEETS LEAD SYNC ────────────────────────────────────────────────
+  {
+    id: 'google_sheet',
+    category: 'developer',
+    name: 'Google Sheets Lead Sync',
+    description: 'Automatically import leads from a Google Sheet into CRM using a secure webhook and Google Apps Script.',
+    icon: '📊',
+    color: '#0F9D58',
+    authType: 'manual',
+    syncIntervalMinutes: null,
+    syncLabel: 'Webhook (realtime)',
+    supportsWebhook: false,
+    fields: [
+      {
+        key: 'webhookSecret',
+        label: 'Webhook Secret',
+        type: 'password',
+        required: true,
+        placeholder: 'Generate a strong random string (min 32 chars)',
+        hint: 'Copy this exact value into your Google Apps Script as WEBHOOK_SECRET',
+      },
+    ],
+    configFields: [
+      {
+        key: 'spreadsheetId',
+        label: 'Google Spreadsheet ID (reference only)',
+        type: 'text',
+        required: false,
+        placeholder: '1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms',
+        hint: 'The ID from the Sheet URL. Not used by CRM — for your own reference.',
+      },
+      {
+        key: 'sheetName',
+        label: 'Sheet Tab Name (reference only)',
+        type: 'text',
+        required: false,
+        placeholder: 'Sheet1',
+        hint: 'The tab name you configured in the Apps Script. For your reference.',
+      },
+    ],
+    displayFields: ['spreadsheetId', 'sheetName'],
+  },
 ]
 
 // ── Helpers ──────────────────────────────────────────────────────────────────

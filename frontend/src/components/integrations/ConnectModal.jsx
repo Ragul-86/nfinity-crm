@@ -222,41 +222,53 @@ export default function ConnectModal({ open, onClose, config, integration }) {
     })
   }
 
-  const handleOAuthConnect = () => {
-    // Open OAuth flow in popup window
-    const width = 600, height = 700
-    const left = (window.screen.width - width) / 2
-    const top = (window.screen.height - height) / 2
-    const popup = window.open(
-      `/api/integrations/oauth/${config.id}/init`,
-      `oauth_${config.id}`,
-      `width=${width},height=${height},left=${left},top=${top},toolbar=0,menubar=0`
-    )
+  const handleOAuthConnect = async () => {
+    try {
+      // Step 1: Ask the backend (via authenticated API call) for the OAuth URL.
+      // This avoids opening a backend URL directly in a popup, which would fail
+      // because the popup can't send the Authorization header cross-origin.
+      const { data } = await api.get(`/integrations/oauth/${config.id}/init?noRedirect=true`)
+      const authUrl  = data.authUrl
+      if (!authUrl) throw new Error('No auth URL returned from server')
 
-    // Listen for OAuth completion message
-    const handler = (event) => {
-      if (event.data?.type === 'oauth_complete' && event.data?.provider === config.id) {
-        window.removeEventListener('message', handler)
-        qc.invalidateQueries(['integrations'])
-        onClose()
-        if (event.data.success) {
-          toast.success(`${config.name} connected successfully`)
-        } else {
-          toast.error(`Connection failed: ${event.data.reason || 'Unknown error'}`)
+      // Step 2: Open the external OAuth provider (Facebook / Google) in a popup.
+      const width = 600, height = 700
+      const left  = (window.screen.width  - width)  / 2
+      const top   = (window.screen.height - height) / 2
+      const popup = window.open(
+        authUrl, // ← Direct Facebook/Google URL — no backend redirect in the popup
+        `oauth_${config.id}`,
+        `width=${width},height=${height},left=${left},top=${top},toolbar=0,menubar=0`
+      )
+
+      // Step 3: Listen for postMessage from OAuthCallback page
+      const handler = (event) => {
+        if (event.data?.type === 'oauth_complete' && event.data?.provider === config.id) {
+          window.removeEventListener('message', handler)
+          clearInterval(checkClosed)
+          qc.invalidateQueries(['integrations'])
+          onClose()
+          if (event.data.success) {
+            toast.success(`${config.name} connected successfully`)
+          } else {
+            toast.error(`Connection failed: ${event.data.reason || 'Unknown error'}`)
+          }
         }
       }
-    }
-    window.addEventListener('message', handler)
+      window.addEventListener('message', handler)
 
-    // Fallback: poll for popup close + check URL for oauth param
-    const checkClosed = setInterval(() => {
-      if (popup?.closed) {
-        clearInterval(checkClosed)
-        window.removeEventListener('message', handler)
-        qc.invalidateQueries(['integrations'])
-        onClose()
-      }
-    }, 500)
+      // Fallback: detect popup closed without postMessage
+      const checkClosed = setInterval(() => {
+        if (popup?.closed) {
+          clearInterval(checkClosed)
+          window.removeEventListener('message', handler)
+          qc.invalidateQueries(['integrations'])
+          onClose()
+        }
+      }, 500)
+    } catch (e) {
+      toast.error(e?.response?.data?.message || e?.message || 'Failed to initiate OAuth')
+    }
   }
 
   if (!config) return null

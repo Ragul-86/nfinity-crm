@@ -20,6 +20,7 @@ const SENSITIVE_FIELDS = {
   claude:      ['apiKey'],
   gemini:      ['apiKey'],
   webhook:     ['webhookSecret', 'authToken'],
+  google_sheet: ['webhookSecret'],
 };
 
 // ── Simple HTTPS GET (no external deps) ─────────────────────────────────────
@@ -492,6 +493,10 @@ exports.oauthInit = async (req, res, next) => {
     const tenantId    = injectTenantId(req);
     if (!tenantId) return next(err('No workspace context for OAuth', 403));
 
+    // noRedirect=true → return JSON { authUrl } instead of browser redirect
+    // Used by the frontend to open the OAuth URL in a popup via JS
+    const noRedirect = req.query.noRedirect === 'true';
+
     const state       = crypto.randomBytes(16).toString('hex');
     const callbackBase = process.env.API_BASE_URL || `http://localhost:${process.env.PORT || 5000}`;
 
@@ -544,6 +549,9 @@ exports.oauthInit = async (req, res, next) => {
         return next(err(`OAuth not supported for provider: ${provider}`));
     }
 
+    if (noRedirect) {
+      return res.json({ success: true, authUrl });
+    }
     res.redirect(authUrl);
   } catch (e) { next(e) }
 };

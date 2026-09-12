@@ -9,6 +9,10 @@ const leadSchema = new mongoose.Schema({
   // Auto-generated lead ID
   leadId: { type: String, unique: true, sparse: true, index: true },  // e.g. LEAD-00001
 
+  // External identifier for de-duplication (Google Sheet lead_id, etc.)
+  externalLeadId: { type: String, default: null, sparse: true },
+  externalSource: { type: String, default: null },  // e.g. 'google_sheet'
+
   // Core contact info
   name: { type: String, required: true },          // Contact Person
   company: { type: String, default: '' },           // Company Name
@@ -70,6 +74,7 @@ leadSchema.index({ status: 1, kanbanOrder: 1 })
 leadSchema.index({ createdBy: 1 })
 leadSchema.index({ campaign: 1 })
 leadSchema.index({ tenantId: 1, createdAt: -1 })
+leadSchema.index({ tenantId: 1, externalLeadId: 1 }, { sparse: true })
 
 // Auto-generate leadId before save
 leadSchema.pre('save', async function (next) {

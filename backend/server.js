@@ -66,7 +66,8 @@ const operationsRoutes  = require('./routes/operations');
 const searchRoutes      = require('./routes/search');
 const aiRoutes          = require('./routes/ai');
 const clientPortalRoutes = require('./routes/clientPortal');
-const systemHealthRoutes = require('./routes/systemHealth');
+const systemHealthRoutes    = require('./routes/systemHealth');
+const gsheetWebhookRoutes   = require('./routes/gsheetWebhook');
 
 const app = express();
 
@@ -255,7 +256,9 @@ app.use('/api/operations',  operationsRoutes);
 app.use('/api/search',      searchRoutes);
 app.use('/api/ai',          aiRoutes);
 app.use('/api/portal',      clientPortalRoutes);
-app.use('/api/health',      systemHealthRoutes);
+app.use('/api/health',         systemHealthRoutes);
+// Google Sheet → CRM lead sync (public, HMAC-secured)
+app.use('/api/gsheet-webhook', gsheetWebhookRoutes);
 
 // 404 handler
 app.use('*', (req, res) => res.status(404).json({ success: false, message: `Route ${req.originalUrl} not found` }));
