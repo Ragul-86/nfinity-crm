@@ -72,6 +72,14 @@ const leadSchema = new mongoose.Schema({
   // Shape varies per import source — never contains credentials or security tokens.
   customFields: { type: mongoose.Schema.Types.Mixed, default: {} },
 
+  // ── Pipeline / Stage assignment ────────────────────────────────────────────
+  // Added for flexible multi-pipeline support. Backward-compatible:
+  // existing leads without these fields continue to use the `status` enum.
+  pipelineId: { type: mongoose.Schema.Types.ObjectId, ref: 'Pipeline', default: null, index: true },
+  stageId:    { type: mongoose.Schema.Types.ObjectId, default: null },   // _id of embedded stage in Pipeline
+  stageName:  { type: String, default: null },                           // denormalized for display / fast queries
+  stageType:  { type: String, enum: ['open', 'won', 'lost'], default: 'open' },
+
   // Meta / Google Sheet ad attribution — top-level for efficient filtering and indexing.
   // Populated by the gsheetWebhook controller; distinct from the CRM Campaign ObjectId ref.
   adId:        { type: String, default: null },  // Meta ad_id
@@ -95,6 +103,8 @@ leadSchema.index({ tenantId: 1, createdAt: -1 })
 leadSchema.index({ tenantId: 1, externalLeadId: 1 }, { sparse: true })
 leadSchema.index({ tenantId: 1, adId: 1 }, { sparse: true })
 leadSchema.index({ tenantId: 1, campaignId: 1 }, { sparse: true })
+leadSchema.index({ tenantId: 1, pipelineId: 1 }, { sparse: true })
+leadSchema.index({ tenantId: 1, pipelineId: 1, stageId: 1 }, { sparse: true })
 
 // Auto-generate leadId before save
 leadSchema.pre('save', async function (next) {
