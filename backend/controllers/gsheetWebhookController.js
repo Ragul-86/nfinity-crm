@@ -7,12 +7,12 @@
  *   Creates new leads. Existing externalLeadId → counted as duplicate, skipped.
  *
  * Backfill     — POST /api/gsheet-webhook?workspaceId=<tenantId>&update=true
- *   Updates customFields on EXISTING leads only. Never creates new documents.
- *   Safe to run multiple times (idempotent).
+ *   Updates customFields + ad attribution on EXISTING leads only.
+ *   Never creates new documents. Idempotent — safe to run multiple times.
  *
- * Security:   HMAC-SHA256 signature in x-gsheet-signature header (both modes).
- * Dedup:      tenantId + externalLeadId compound lookup.
- * Isolation:  Each workspace uses its own Integration record and encrypted secret.
+ * Security:   HMAC-SHA256 in x-gsheet-signature header (same for both modes).
+ * Dedup:      tenantId + externalLeadId compound index.
+ * Isolation:  Each workspace uses its own Integration record with its own encrypted secret.
  */
 
 const crypto      = require('crypto');
@@ -63,12 +63,29 @@ function normaliseSource(raw) {
 }
 
 // ── Keys that should NEVER be stored in customFields (security) ────────────────
-// These should never arrive in a row payload, but we guard here defensively.
 const CF_BLOCKED_KEYS = new Set([
   'webhookSecret', 'webhook_secret', 'accessToken', 'access_token',
   'refreshToken', 'refresh_token', 'apiKey', 'api_key',
   'secret', 'token', 'password', 'credentials', 'iv', 'tag', 'encrypted',
 ]);
+
+// ── Extract Meta ad attribution from customFields to top-level ─────────────────
+// These fields are promoted to indexed top-level schema fields for fast filtering.
+// They remain in customFields too for backward compat and direct raw access.
+function extractAttribution(customFields, rowSheetName) {
+  const str = (v) => (v !== undefined && v !== null ? String(v).trim() : null) || null;
+  return {
+    adId:        str(customFields.ad_id),
+    adName:      str(customFields.ad_name),
+    adSetId:     str(customFields.adset_id),
+    adSetName:   str(customFields.adset_name),
+    campaignId:  str(customFields.campaign_id),
+    campaignName:str(customFields.campaign_name),
+    metaFormId:  str(customFields.form_id),
+    metaFormName:str(customFields.form_name),
+    sheetName:   str(rowSheetName),
+  };
+}
 
 // ── Main handler ───────────────────────────────────────────────────────────────
 exports.receiveLeads = async (req, res) => {
@@ -110,6 +127,32 @@ exports.receiveLeads = async (req, res) => {
       return res.status(401).json({ success: false, message: 'Invalid signature' });
     }
 
+    // ── 3b. Optional spreadsheet binding check ──
+    // If the Integration has a spreadsheetId configured, verify that the incoming
+    // request comes from that exact spreadsheet (header sent by the universal Code.gs).
+    // This adds defense-in-depth: even if the HMAC secret is somehow known by a
+    // third party, requests from a different spreadsheet are rejected.
+    //
+    // Backward-compatible: only enforced when BOTH sides have the value.
+    //   – Old Code.gs (no x-spreadsheet-id header): no validation, allowed.
+    //   – New Code.gs + integration without spreadsheetId configured: no validation, allowed.
+    //   – New Code.gs + spreadsheetId configured: must match exactly.
+    const configuredSpreadsheetId = integration.config?.spreadsheetId;
+    const incomingSpreadsheetId   = req.headers['x-spreadsheet-id'];
+    if (configuredSpreadsheetId && incomingSpreadsheetId) {
+      if (configuredSpreadsheetId !== incomingSpreadsheetId) {
+        console.warn(
+          `GSheet webhook: spreadsheet ID mismatch for tenant ${workspaceId}. ` +
+          `Configured: ${configuredSpreadsheetId}, Received: ${incomingSpreadsheetId}`
+        );
+        return res.status(403).json({
+          success: false,
+          message: 'Spreadsheet not authorized for this workspace. ' +
+                   'Run setupTrigger() on the correct spreadsheet, or update the integration config.',
+        });
+      }
+    }
+
     // ── 4. Process rows ──
     const rows = Array.isArray(req.body) ? req.body : [req.body];
     const results = { created: 0, duplicates: 0, errors: 0, updated: 0, notFound: 0 };
@@ -130,17 +173,26 @@ exports.receiveLeads = async (req, res) => {
           : {};
         const customFields = {};
         for (const [k, v] of Object.entries(rawCF)) {
-          if (CF_BLOCKED_KEYS.has(k)) continue;         // drop security keys defensively
-          if (v === null || v === undefined) continue;   // drop nulls
+          if (CF_BLOCKED_KEYS.has(k)) continue;
+          if (v === null || v === undefined) continue;
           customFields[k] = v;
         }
 
-        // ── BACKFILL MODE: update customFields on existing leads only ──────────
+        // ── Extract top-level attribution fields ──
+        const attribution = extractAttribution(customFields, row.sheetName);
+
+        // ── BACKFILL MODE: update existing leads only ──────────────────────────
         if (isBackfill) {
+          // Build $set — only update fields that have real values
+          const setFields = { customFields };
+          for (const [k, v] of Object.entries(attribution)) {
+            if (v !== null) setFields[k] = v;
+          }
+
           const updated = await Lead.findOneAndUpdate(
             { tenantId: workspaceId, externalLeadId },
-            { $set: { customFields } },
-            { new: false, upsert: false }   // never create; never touch other fields
+            { $set: setFields },
+            { new: false, upsert: false }   // never create; never touch status/notes/etc.
           );
           if (updated) results.updated++;
           else         results.notFound++;
@@ -154,8 +206,8 @@ exports.receiveLeads = async (req, res) => {
           continue;
         }
 
-        // Extract campaign name from customFields for backward-compat tags
-        const campaignName = String(customFields.campaign_name || '').trim();
+        // Keep campaign name in tags for backward-compat with existing tag-based filters
+        const campaignTag = attribution.campaignName || '';
 
         await Lead.create({
           externalLeadId,
@@ -166,9 +218,10 @@ exports.receiveLeads = async (req, res) => {
           source: normaliseSource(row.source),
           status: 'new_lead',
           tenantId: workspaceId,
-          // Keep campaign name in tags for backward compatibility with existing filters
-          tags: campaignName ? [`campaign:${campaignName}`] : [],
+          tags: campaignTag ? [`campaign:${campaignTag}`] : [],
           customFields,
+          // Top-level attribution for indexing and filtering
+          ...attribution,
         });
 
         results.created++;
@@ -179,7 +232,6 @@ exports.receiveLeads = async (req, res) => {
     }
 
     // ── 5. Update lastSync on the integration record ──
-    // Mark failed only when nothing succeeded AND there were errors
     const productive = results.created + results.duplicates + results.updated + results.notFound;
     await Integration.findByIdAndUpdate(integration._id, {
       $set: {

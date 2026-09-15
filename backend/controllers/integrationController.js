@@ -141,6 +141,112 @@ exports.getIntegration = async (req, res, next) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// POST /api/integrations/google_sheet/setup
+// (Matched via the generic  POST /:provider/setup  route in integrations.js)
+//
+// One-click onboarding for the Google Sheets lead-sync integration.
+// Generates a fresh HMAC webhook secret, stores it encrypted, and returns the
+// complete Script Properties block the admin should paste into their Apps Script.
+//
+// Security model:
+//   • Each workspace gets its own randomly generated secret (32 random bytes).
+//   • The secret is stored AES-256-GCM encrypted in Integration.credentials.
+//   • The plaintext secret is returned ONLY in this response — never again.
+//     Regenerating (calling this endpoint again) issues a NEW secret and
+//     immediately invalidates the old one.
+//   • The Apps Script must present a valid HMAC for every request; HMAC is
+//     computed using this secret, so other tenants cannot forge requests.
+//   • An optional spreadsheetId stored in config.spreadsheetId is checked
+//     against the x-spreadsheet-id header on incoming webhook calls, binding
+//     the secret to a specific spreadsheet.
+//
+// Body (all optional): { spreadsheetId, selectedTabs: string[] }
+// ─────────────────────────────────────────────────────────────────────────────
+exports.setupGoogleSheet = async (req, res, next) => {
+  try {
+    const tenantId = injectTenantId(req);
+    if (!tenantId) return next(err('No workspace context', 403));
+
+    const { spreadsheetId, selectedTabs } = req.body || {};
+
+    // Generate a cryptographically random 32-byte hex webhook secret
+    const plaintextSecret = crypto.randomBytes(32).toString('hex');
+    const encryptedSecret = encrypt(plaintextSecret);
+
+    // Build the config to store (non-sensitive, plain JSON in Integration.config)
+    const configUpdate = {};
+    if (spreadsheetId)              configUpdate.spreadsheetId = String(spreadsheetId).trim();
+    if (Array.isArray(selectedTabs)) configUpdate.selectedTabs  = selectedTabs.map(s => String(s).trim()).filter(Boolean);
+
+    // Upsert the google_sheet integration record for this tenant
+    const existing = await Integration.findOne({ tenantId, provider: 'google_sheet' }).lean();
+    const isNew = !existing;
+
+    await Integration.findOneAndUpdate(
+      { tenantId, provider: 'google_sheet' },
+      {
+        $set: {
+          tenantId,
+          category:       'google',
+          provider:       'google_sheet',
+          name:           'Google Sheets Lead Sync',
+          status:         'connected',
+          credentials:    { webhookSecret: encryptedSecret },  // replaces old secret
+          config:         { ...(existing?.config || {}), ...configUpdate },
+          connectedBy:    req.user._id,
+          connectedAt:    new Date(),
+          disconnectedAt: null,
+          'syncSettings.autoSync': true,
+          'syncSettings.intervalMinutes': 5,
+        },
+      },
+      { upsert: true, setDefaultsOnInsert: true }
+    );
+
+    // Build the webhook URL base (used in the Script Properties block)
+    const apiBase  = (process.env.API_BASE_URL || 'https://nfinity-crm.onrender.com').replace(/\/$/, '');
+    const webhookUrl = `${apiBase}/api/gsheet-webhook`;
+
+    // The Script Properties block to copy-paste into Apps Script
+    const scriptProperties = {
+      WEBHOOK_URL:    webhookUrl,
+      TENANT_ID:      String(tenantId),
+      WEBHOOK_SECRET: plaintextSecret,
+      SHEETS_TO_SYNC: (configUpdate.selectedTabs || existing?.config?.selectedTabs || []).join(','),
+    };
+
+    await logAction({
+      action:       isNew ? 'integration_connected' : 'integration_updated',
+      module:       'integrations',
+      performedBy:  req.user._id,
+      tenantId,
+      resourceId:   'google_sheet',
+      resourceType: 'integration',
+      details:      { provider: 'google_sheet', regenerated: !isNew, spreadsheetId },
+      req,
+    });
+
+    return res.json({
+      success: true,
+      message: isNew
+        ? 'Google Sheets integration created. Copy the scriptProperties block into your Apps Script.'
+        : 'Webhook secret regenerated. Update WEBHOOK_SECRET in your Apps Script Script Properties.',
+      warning: !isNew
+        ? 'The previous webhook secret has been invalidated. Update your Apps Script Script Properties immediately.'
+        : null,
+      scriptProperties,
+      instructions: [
+        '1. Open your Google Sheet → Extensions → Apps Script.',
+        '2. Paste the universal Code.gs from your CRM admin panel.',
+        '3. Go to Project Settings → Script Properties.',
+        '4. Add each key from scriptProperties above.',
+        '5. Run showCurrentConfig() to verify, then testSync(), then setupTrigger().',
+      ],
+    });
+  } catch (e) { next(e); }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 // POST /api/integrations/:provider
 // Create or update (upsert) an integration for the current tenant
 // Body: { category, name, credentials, config, syncSettings }

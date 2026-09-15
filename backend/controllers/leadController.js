@@ -359,6 +359,30 @@ exports.importLeads = async (req, res, next) => {
 };
 
 // ── GET /api/leads/export ──────────────────────────────────────────────────────
+// ── GET /api/leads/ads ─────────────────────────────────────────────────────────
+// Returns distinct ads (adId + adName) for the tenant, with lead count per ad.
+// Used by the Leads page ad-filter dropdown.
+exports.getAdSummary = async (req, res, next) => {
+  try {
+    const tf = getTenantFilter(req);
+
+    const ads = await Lead.aggregate([
+      { $match: { ...tf, adId: { $ne: null } } },
+      {
+        $group: {
+          _id:    '$adId',
+          adName: { $first: '$adName' },
+          count:  { $sum: 1 },
+        },
+      },
+      { $sort: { count: -1 } },
+      { $limit: 200 },
+    ]);
+
+    res.json({ success: true, ads });
+  } catch (e) { next(e); }
+};
+
 exports.exportLeads = async (req, res, next) => {
   try {
     const tf = getTenantFilter(req);

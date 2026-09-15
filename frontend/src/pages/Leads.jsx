@@ -22,13 +22,20 @@ import { cn } from '@/utils/cn'
 import { format } from 'date-fns'
 import { useAuth } from '@/contexts/AuthContext'
 import LeadDetailModal from '@/components/leads/LeadDetailModal'
+import { getToken } from '@/services/api'
 
-const API = import.meta.env.VITE_API_URL || 'http://localhost:5000'
+// API_ORIGIN strips the trailing /api so paths starting with /api/ don't double up
+const API_ORIGIN = (import.meta.env.VITE_API_URL || 'http://localhost:5000/api')
+  .replace(/\/api\/?$/, '')
 
 async function apiFetch(url, opts = {}) {
-  const r = await fetch(`${API}${url}`, {
+  const token = getToken()
+  const r = await fetch(`${API_ORIGIN}${url}`, {
     credentials: 'include',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
     ...opts,
   })
   const d = await r.json()
@@ -301,7 +308,7 @@ export default function Leads() {
   const qc = useQueryClient()
   const [page, setPage] = useState(1)
   const [search, setSearch] = useState('')
-  const [filters, setFilters] = useState({ status: '', priority: '', source: '' })
+  const [filters, setFilters] = useState({ status: '', priority: '', source: '', adId: '' })
   const [showCreate, setShowCreate] = useState(false)
   const [showImport, setShowImport] = useState(false)
   const [detailId, setDetailId] = useState(null)
@@ -316,6 +323,7 @@ export default function Leads() {
     ...(filters.status   && { status: filters.status }),
     ...(filters.priority && { priority: filters.priority }),
     ...(filters.source   && { source: filters.source }),
+    ...(filters.adId     && { adId: filters.adId }),
   }).toString()
 
   const { data: leadsData, isLoading } = useQuery({
@@ -329,6 +337,12 @@ export default function Leads() {
     queryKey: ['lead-stats'],
     queryFn: () => apiFetch('/api/leads/stats').then(d => d.data),
     refetchInterval: 60000,
+  })
+
+  const { data: adsData } = useQuery({
+    queryKey: ['lead-ads'],
+    queryFn: () => apiFetch('/api/leads/ads').then(d => d.ads || []),
+    staleTime: 5 * 60 * 1000,
   })
 
   const deleteMut = useMutation({
@@ -351,9 +365,9 @@ export default function Leads() {
   const leads = leadsData?.data || []
   const total = leadsData?.total || 0
   const pages = Math.ceil(total / LIMIT)
-  const hasFilters = search || filters.status || filters.priority || filters.source
+  const hasFilters = search || filters.status || filters.priority || filters.source || filters.adId
   const filterChange = (k, v) => { setFilters(f => ({ ...f, [k]: v })); setPage(1) }
-  const clearFilters = () => { setFilters({ status: '', priority: '', source: '' }); setSearch(''); setPage(1) }
+  const clearFilters = () => { setFilters({ status: '', priority: '', source: '', adId: '' }); setSearch(''); setPage(1) }
 
   return (
     <div className="p-4 sm:p-6 space-y-5">
@@ -366,7 +380,7 @@ export default function Leads() {
         <div className="flex items-center gap-2 flex-wrap">
           {isManager && (
             <>
-              <Button variant="outline" size="sm" onClick={() => window.open(`${API}/api/leads/export`, '_blank')}>
+              <Button variant="outline" size="sm" onClick={() => window.open(`${API_ORIGIN}/api/leads/export`, '_blank')}>
                 <Download className="w-4 h-4 mr-1.5" /> Export
               </Button>
               <Button variant="outline" size="sm" onClick={() => setShowImport(true)}>
@@ -428,6 +442,19 @@ export default function Leads() {
             {SOURCES.map(s => <SelectItem key={s} value={s}>{fmtLabel(s)}</SelectItem>)}
           </SelectContent>
         </Select>
+        {adsData && adsData.length > 0 && (
+          <Select value={filters.adId || 'all'} onValueChange={v => filterChange('adId', v === 'all' ? '' : v)}>
+            <SelectTrigger className="w-44 h-9"><SelectValue placeholder="Ad" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Ads</SelectItem>
+              {adsData.map(ad => (
+                <SelectItem key={ad._id} value={ad._id}>
+                  {ad.adName || ad._id} <span className="text-muted-foreground ml-1">({ad.count})</span>
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
         {hasFilters && <Button variant="ghost" size="sm" onClick={clearFilters}><X className="w-4 h-4 mr-1" /> Clear</Button>}
       </div>
 

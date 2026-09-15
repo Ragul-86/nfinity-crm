@@ -13,7 +13,7 @@ import {
   Phone, Mail, Globe, Building2, MapPin, Tag, Calendar,
   Plus, Check, X, Clock, ChevronRight, Pencil, Trash2,
   Activity, MessageSquare, UserCheck, TrendingUp,
-  PhoneCall, Video, Users, AtSign,
+  PhoneCall, Video, Users, AtSign, Megaphone,
 } from 'lucide-react'
 import { cn } from '@/utils/cn'
 import { format, formatDistanceToNow, isPast } from 'date-fns'
@@ -611,6 +611,9 @@ export default function LeadDetailModal({ open, onClose, leadId, onUpdated }) {
                     </div>
                   )}
 
+                  {/* Meta ad attribution — top-level fields from Google Sheet sync */}
+                  <AdAttributionSection lead={lead} />
+
                   {/* Google Sheet / Meta form response fields */}
                   <CustomFieldsSection customFields={lead.customFields} />
                 </TabsContent>
@@ -650,13 +653,64 @@ function InfoRow({ label, value, className }) {
   )
 }
 
+// ── Ad Attribution Section ─────────────────────────────────────────────────────
+// Renders top-level Meta ad attribution fields stored on the Lead document.
+// Only shown when at least one attribution field is populated.
+const AD_ATTR_FIELDS = [
+  { key: 'adName',      label: 'Ad Name' },
+  { key: 'adId',        label: 'Ad ID' },
+  { key: 'adSetName',   label: 'Ad Set Name' },
+  { key: 'adSetId',     label: 'Ad Set ID' },
+  { key: 'campaignName',label: 'Campaign Name' },
+  { key: 'campaignId',  label: 'Campaign ID' },
+  { key: 'metaFormName',label: 'Form Name' },
+  { key: 'metaFormId',  label: 'Form ID' },
+  { key: 'sheetName',   label: 'Sheet / Tab' },
+]
+
+function AdAttributionSection({ lead }) {
+  const entries = AD_ATTR_FIELDS.filter(({ key }) => {
+    const v = lead[key]
+    return v !== null && v !== undefined && String(v).trim() !== ''
+  })
+  if (entries.length === 0) return null
+
+  return (
+    <div className="space-y-3 pt-2">
+      <div className="flex items-center gap-2">
+        <div className="h-px flex-1 bg-border" />
+        <p className="text-[11px] font-semibold tracking-wide text-muted-foreground uppercase px-1 flex items-center gap-1">
+          <Megaphone className="w-3 h-3" /> Ad Attribution
+        </p>
+        <div className="h-px flex-1 bg-border" />
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        {entries.map(({ key, label }) => {
+          const value = String(lead[key])
+          const isLong = label.length > 28 || value.length > 40
+          return (
+            <div key={key} className={cn('space-y-0.5', isLong && 'col-span-2')}>
+              <p className="text-xs text-muted-foreground">{label}</p>
+              <p className="text-sm font-medium break-words">{value}</p>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 // ── Custom fields (Google Sheet / Meta form responses) ─────────────────────────
 // Keys blocked from display — these should never arrive in customFields but we
 // guard defensively so no credential-like key is ever rendered.
+// Also hide raw ad attribution keys — they're shown in AdAttributionSection above.
 const CF_HIDDEN_KEYS = new Set([
   'webhookSecret', 'webhook_secret', 'accessToken', 'access_token',
   'refreshToken', 'refresh_token', 'apiKey', 'api_key',
   'secret', 'token', 'password', 'credentials', 'iv', 'tag', 'encrypted',
+  // Raw Meta / Sheet ad attribution keys (shown in AdAttributionSection instead)
+  'ad_id', 'ad_name', 'adset_id', 'adset_name',
+  'campaign_id', 'campaign_name', 'form_id', 'form_name',
 ])
 
 function formatCFLabel(key) {

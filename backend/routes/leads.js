@@ -4,14 +4,15 @@ const { protect, authorize } = require('../middleware/auth');
 const {
   getLeads, getLead, createLead, updateLead, deleteLead,
   addNote, deleteNote, getLeadStats, getTimeline,
-  bulkAction, importLeads, exportLeads,
+  bulkAction, importLeads, exportLeads, getAdSummary,
 } = require('../controllers/leadController');
 
 router.use(protect);
 
-// Stats & export
+// Stats & export & ad summary — all before /:id
 router.get('/stats', getLeadStats);
 router.get('/export', exportLeads);
+router.get('/ads', getAdSummary);
 
 // Bulk & import
 router.post('/bulk', bulkAction);

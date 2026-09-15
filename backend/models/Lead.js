@@ -72,6 +72,18 @@ const leadSchema = new mongoose.Schema({
   // Shape varies per import source — never contains credentials or security tokens.
   customFields: { type: mongoose.Schema.Types.Mixed, default: {} },
 
+  // Meta / Google Sheet ad attribution — top-level for efficient filtering and indexing.
+  // Populated by the gsheetWebhook controller; distinct from the CRM Campaign ObjectId ref.
+  adId:        { type: String, default: null },  // Meta ad_id
+  adName:      { type: String, default: null },  // Meta ad_name
+  adSetId:     { type: String, default: null },  // Meta adset_id
+  adSetName:   { type: String, default: null },  // Meta adset_name
+  campaignId:  { type: String, default: null },  // Meta campaign_id (string, not ObjectId)
+  campaignName:{ type: String, default: null },  // Meta campaign_name (string, not ObjectId ref)
+  metaFormId:  { type: String, default: null },  // Meta form_id (string; distinct from CRM formId ObjectId)
+  metaFormName:{ type: String, default: null },  // Meta form_name
+  sheetName:   { type: String, default: null },  // Source Google Sheet tab name
+
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   tenantId: { type: mongoose.Schema.Types.ObjectId, ref: 'Tenant', index: true, sparse: true },
 }, { timestamps: true })
@@ -81,6 +93,8 @@ leadSchema.index({ createdBy: 1 })
 leadSchema.index({ campaign: 1 })
 leadSchema.index({ tenantId: 1, createdAt: -1 })
 leadSchema.index({ tenantId: 1, externalLeadId: 1 }, { sparse: true })
+leadSchema.index({ tenantId: 1, adId: 1 }, { sparse: true })
+leadSchema.index({ tenantId: 1, campaignId: 1 }, { sparse: true })
 
 // Auto-generate leadId before save
 leadSchema.pre('save', async function (next) {
