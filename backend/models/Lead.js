@@ -66,6 +66,12 @@ const leadSchema = new mongoose.Schema({
   campaign: { type: mongoose.Schema.Types.ObjectId, ref: 'Campaign' },  // optional: ties a lead to a specific campaign workspace
   convertedClientId: { type: mongoose.Schema.Types.ObjectId, ref: 'Client' }, // set when won → client
   tags: [String],
+
+  // Dynamic fields from external sources (Google Sheet columns, Meta form answers, etc.)
+  // Stores any column that does not map to a standard Lead field.
+  // Shape varies per import source — never contains credentials or security tokens.
+  customFields: { type: mongoose.Schema.Types.Mixed, default: {} },
+
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   tenantId: { type: mongoose.Schema.Types.ObjectId, ref: 'Tenant', index: true, sparse: true },
 }, { timestamps: true })

@@ -610,6 +610,9 @@ export default function LeadDetailModal({ open, onClose, leadId, onUpdated }) {
                       <p className="text-sm">{lead.convertedClientId.companyName || lead.convertedClientId.contactPerson}</p>
                     </div>
                   )}
+
+                  {/* Google Sheet / Meta form response fields */}
+                  <CustomFieldsSection customFields={lead.customFields} />
                 </TabsContent>
 
                 {/* Timeline */}
@@ -643,6 +646,66 @@ function InfoRow({ label, value, className }) {
     <div className="space-y-0.5">
       <p className="text-xs text-muted-foreground">{label}</p>
       <p className={cn('text-sm font-medium', className)}>{value}</p>
+    </div>
+  )
+}
+
+// ── Custom fields (Google Sheet / Meta form responses) ─────────────────────────
+// Keys blocked from display — these should never arrive in customFields but we
+// guard defensively so no credential-like key is ever rendered.
+const CF_HIDDEN_KEYS = new Set([
+  'webhookSecret', 'webhook_secret', 'accessToken', 'access_token',
+  'refreshToken', 'refresh_token', 'apiKey', 'api_key',
+  'secret', 'token', 'password', 'credentials', 'iv', 'tag', 'encrypted',
+])
+
+function formatCFLabel(key) {
+  // snake_case / camelCase → "Title Case With Spaces"
+  return key
+    .replace(/([a-z])([A-Z])/g, '$1 $2')  // camelCase split
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, c => c.toUpperCase())
+}
+
+function CustomFieldsSection({ customFields }) {
+  if (!customFields || typeof customFields !== 'object') return null
+
+  const entries = Object.entries(customFields).filter(([k, v]) => {
+    if (CF_HIDDEN_KEYS.has(k)) return false
+    if (v === null || v === undefined || String(v).trim() === '') return false
+    if (typeof v === 'object') return false  // skip nested; shouldn't occur
+    return true
+  })
+
+  if (entries.length === 0) return null
+
+  return (
+    <div className="space-y-3 pt-2">
+      {/* Divider with label */}
+      <div className="flex items-center gap-2">
+        <div className="h-px flex-1 bg-border" />
+        <p className="text-[11px] font-semibold tracking-wide text-muted-foreground uppercase px-1">
+          Form Responses / Additional Details
+        </p>
+        <div className="h-px flex-1 bg-border" />
+      </div>
+
+      <div className="grid grid-cols-2 gap-3">
+        {entries.map(([key, value]) => {
+          const label = formatCFLabel(key)
+          // Long labels or values get full width
+          const isLong = label.length > 28 || String(value).length > 40
+          return (
+            <div
+              key={key}
+              className={cn('space-y-0.5', isLong && 'col-span-2')}
+            >
+              <p className="text-xs text-muted-foreground">{label}</p>
+              <p className="text-sm font-medium break-words">{String(value)}</p>
+            </div>
+          )
+        })}
+      </div>
     </div>
   )
 }
