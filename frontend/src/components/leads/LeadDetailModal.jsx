@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
+import { getToken } from '@/services/api'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
@@ -18,13 +19,22 @@ import { cn } from '@/utils/cn'
 import { format, formatDistanceToNow, isPast } from 'date-fns'
 import FollowUpModal from './FollowUpModal'
 
-const API = import.meta.env.VITE_API_URL || 'http://localhost:5000'
+// VITE_API_URL already ends in /api (e.g. https://nfinity-crm.onrender.com/api).
+// All apiFetch paths below include /api explicitly, so strip it here to avoid
+// the double-/api bug: onrender.com/api + /api/leads/... → /api/api/leads/...
+const API_ORIGIN = (import.meta.env.VITE_API_URL || 'http://localhost:5000/api')
+  .replace(/\/api\/?$/, '')
 
 async function apiFetch(url, opts = {}) {
-  const r = await fetch(`${API}${url}`, {
+  const token = getToken()
+  const { headers: _callerHeaders, ...restOpts } = opts
+  const r = await fetch(`${API_ORIGIN}${url}`, {
     credentials: 'include',
-    headers: { 'Content-Type': 'application/json' },
-    ...opts,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    ...restOpts,
   })
   const d = await r.json()
   if (!r.ok) throw new Error(d.message || 'Request failed')
@@ -415,9 +425,16 @@ export default function LeadDetailModal({ open, onClose, leadId, onUpdated }) {
     <Dialog open={open} onOpenChange={onClose}>
       <DialogContent className="max-w-2xl max-h-[90vh] flex flex-col p-0 gap-0">
         {isLoading || !lead ? (
-          <div className="flex items-center justify-center h-64 text-muted-foreground text-sm">
-            Loading lead…
-          </div>
+          <>
+            {/* Radix requires DialogTitle whenever DialogContent is mounted */}
+            <DialogHeader className="sr-only">
+              <DialogTitle>Lead Details</DialogTitle>
+              <DialogDescription>Loading lead information</DialogDescription>
+            </DialogHeader>
+            <div className="flex items-center justify-center h-64 text-muted-foreground text-sm">
+              Loading lead…
+            </div>
+          </>
         ) : (
           <>
             {/* ── Header ── */}
@@ -441,6 +458,9 @@ export default function LeadDetailModal({ open, onClose, leadId, onUpdated }) {
                     )}
                   </div>
                   <DialogTitle className="text-lg leading-snug">{lead.name}</DialogTitle>
+                  <DialogDescription className="sr-only">
+                    Lead detail — manage status, priority, notes, follow-ups, and timeline.
+                  </DialogDescription>
                   {lead.company && (
                     <p className="text-sm text-muted-foreground flex items-center gap-1 mt-0.5">
                       <Building2 className="w-3.5 h-3.5" /> {lead.company}
