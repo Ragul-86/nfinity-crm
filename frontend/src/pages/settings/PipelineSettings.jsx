@@ -141,6 +141,20 @@ function StageRow({ stage, index, total, onChange, onRemove, onMoveUp, onMoveDow
         </SelectContent>
       </Select>
 
+      {/* Conversion Action — data-driven, never name/type-based */}
+      <Select
+        value={stage.conversionAction || 'none'}
+        onValueChange={v => onChange('conversionAction', v)}
+      >
+        <SelectTrigger className="w-40 h-8 text-xs" title="What happens when a lead reaches this stage">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="none">No Action</SelectItem>
+          <SelectItem value="convert_to_client">Convert to Client</SelectItem>
+        </SelectContent>
+      </Select>
+
       <button type="button" onClick={onRemove} className="text-destructive hover:text-red-600 transition-colors shrink-0">
         <X className="w-3.5 h-3.5" />
       </button>
@@ -154,10 +168,10 @@ function PipelineEditorDialog({ open, onClose, pipeline, onSaved }) {
   const qc = useQueryClient()
 
   const buildDefaultStages = () => [
-    { name: 'New Lead',  type: 'open', color: '#6366f1', order: 0 },
-    { name: 'Contacted', type: 'open', color: '#3b82f6', order: 1 },
-    { name: 'Won',       type: 'won',  color: '#10b981', order: 2 },
-    { name: 'Lost',      type: 'lost', color: '#ef4444', order: 3 },
+    { name: 'New Lead',  type: 'open', color: '#6366f1', order: 0, conversionAction: 'none' },
+    { name: 'Contacted', type: 'open', color: '#3b82f6', order: 1, conversionAction: 'none' },
+    { name: 'Won',       type: 'won',  color: '#10b981', order: 2, conversionAction: 'convert_to_client' },
+    { name: 'Lost',      type: 'lost', color: '#ef4444', order: 3, conversionAction: 'none' },
   ]
 
   const [name, setName] = useState(pipeline?.name || '')
@@ -219,7 +233,7 @@ function PipelineEditorDialog({ open, onClose, pipeline, onSaved }) {
 
   const addStage = () => setStages(prev => [
     ...prev,
-    { name: '', type: 'open', color: '#6366f1', order: prev.length },
+    { name: '', type: 'open', color: '#6366f1', order: prev.length, conversionAction: 'none' },
   ])
 
   const updateStage = (i, key, val) => setStages(prev =>

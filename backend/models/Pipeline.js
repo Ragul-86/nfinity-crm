@@ -22,6 +22,23 @@ const stageSchema = new mongoose.Schema({
   type:        { type: String, enum: ['open', 'won', 'lost'], default: 'open' },
   color:       { type: String, default: '#6366f1' },
   probability: { type: Number, default: 0, min: 0, max: 100 },
+
+  // ── Conversion action ──────────────────────────────────────────────────────
+  // Controls what happens when a lead reaches this stage.
+  // This is INDEPENDENT of stage type — a "Won" stage in a Recruitment pipeline
+  // should NOT create a Client (Hired ≠ Client). Only explicitly configured
+  // stages trigger conversion.
+  //
+  //   'none'              — no action (safe default for ALL stages)
+  //   'convert_to_client' — offer Lead → Client conversion in the pipeline UI
+  //
+  // Configuration is per-stage, per-pipeline, per-tenant.
+  // Never determined by stage name or stage type alone.
+  conversionAction: {
+    type:    String,
+    enum:    ['none', 'convert_to_client'],
+    default: 'none',
+  },
 }, { _id: true });  // Each stage gets its own _id for Lead.stageId references
 
 // ── Pipeline schema ───────────────────────────────────────────────────────────

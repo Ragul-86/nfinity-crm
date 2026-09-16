@@ -180,6 +180,52 @@ connectDB().then(async () => {
     const result = await seedSOPTemplates(SOP, admin ? admin._id : null, tid);
     if (result.seeded) console.log(`🌱 SOP templates: ${result.message}`);
 
+    // ── 8. Backfill conversionAction on existing pipeline stages ──────────────
+    // One-time idempotent migration for pipelines created BEFORE conversionAction
+    // was added to the schema.  The $exists: false filter is the safety boundary:
+    //
+    //   $exists: false  → field is absent from MongoDB → no human ever set it →
+    //                     safe to write the correct template default.
+    //
+    //   $exists: true   → field is present (any value) → either an admin explicitly
+    //                     configured it, or createDefaultPipelinesForTenant already
+    //                     wrote the correct value → DO NOT OVERWRITE.
+    //
+    // This migration will run exactly once per pipeline (idempotent):
+    // on the second server start the field exists on all stages → nothing matches.
+    //
+    // NON_CLIENT_INDUSTRIES must match NON_CLIENT_CONVERSION_INDUSTRIES in
+    // industryTemplates.js — update both together if you add an industry.
+    try {
+      const NON_CLIENT_INDUSTRIES = ['recruitment_hr', 'internship_training', 'recruitment_agency'];
+      const convBackfill = await Pipeline.updateMany(
+        {
+          isActive: true,
+          industry: { $nin: NON_CLIENT_INDUSTRIES },   // skip non-commercial pipelines
+          'stages': {
+            $elemMatch: { type: 'won', conversionAction: { $exists: false } },
+          },
+        },
+        { $set: { 'stages.$[wonStage].conversionAction': 'convert_to_client' } },
+        { arrayFilters: [{ 'wonStage.type': 'won', 'wonStage.conversionAction': { $exists: false } }] }
+      );
+      if (convBackfill.modifiedCount > 0) {
+        console.log(`✅ Backfilled conversionAction='convert_to_client' on ${convBackfill.modifiedCount} commercial pipeline(s) (Won stages)`);
+      }
+      // Also ensure non-client pipelines stay at 'none' (safe, idempotent)
+      await Pipeline.updateMany(
+        {
+          industry: { $in: NON_CLIENT_INDUSTRIES },
+          'stages': { $elemMatch: { conversionAction: { $exists: false } } },
+        },
+        { $set: { 'stages.$[anyStage].conversionAction': 'none' } },
+        { arrayFilters: [{ 'anyStage.conversionAction': { $exists: false } }] }
+      );
+    } catch (convErr) {
+      // Non-fatal — admin can set conversionAction manually via Settings → Pipelines
+      console.warn('conversionAction backfill skipped:', convErr.message);
+    }
+
   } catch (err) {
     console.error('Startup backfill/seed failed:', err.message);
   }

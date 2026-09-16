@@ -4,6 +4,7 @@ const FollowUp = require('../models/FollowUp')
 const Client = require('../models/Client')
 const Notification = require('../models/Notification')
 const User = require('../models/User')
+const Pipeline = require('../models/Pipeline')
 const { getTenantFilter, injectTenantId } = require('../middleware/auth')
 const { logAction } = require('../utils/auditLogger')
 
@@ -350,14 +351,40 @@ exports.moveLead = async (req, res) => {
   res.json({ success: true, data: lead })
 }
 
-// ── POST /api/pipeline/:id/convert — Won lead → create Client ─────────────────
+// ── POST /api/pipeline/:id/convert — Lead → create Client ─────────────────────
+// Gated by stage.conversionAction === 'convert_to_client'.
+// This is NEVER triggered by stage name or stage type alone.
+// A "Hired" stage (Recruitment) must NOT create a Client — the stage must be
+// explicitly configured with conversionAction = 'convert_to_client'.
 exports.convertToClient = async (req, res) => {
   const tf = getTenantFilter(req)
   const lead = await Lead.findOne({ _id: req.params.id, ...tf })
   if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' })
+
+  // Guard 1: must be a "won" type stage (keeps backward compat)
   if (lead.status !== 'won') {
     return res.status(400).json({ success: false, message: 'Only won leads can be converted' })
   }
+
+  // Guard 2: the stage must be explicitly configured for client conversion.
+  // This prevents Recruitment "Hired", Internship "Joined", and any other
+  // non-sales Won stage from creating a Client record.
+  if (lead.pipelineId && lead.stageId) {
+    const pipeline = await Pipeline.findOne({ _id: lead.pipelineId, tenantId: lead.tenantId })
+    if (pipeline) {
+      const stage = pipeline.stages.find(s => String(s._id) === String(lead.stageId))
+      if (stage && stage.conversionAction !== 'convert_to_client') {
+        return res.status(400).json({
+          success:  false,
+          message:  `Stage "${stage.name}" is not configured for Client conversion. ` +
+                    `Open Settings → Pipelines → edit this pipeline and set "Convert to Client" on the "${stage.name}" stage.`,
+          stageId:  stage._id,
+          action:   'configure_conversion_action',
+        })
+      }
+    }
+  }
+
   if (lead.convertedClientId) {
     return res.status(400).json({ success: false, message: 'Already converted to client' })
   }

@@ -25,12 +25,17 @@ const STAGE_COLORS = {
   cancel:  '#ef4444',
 };
 
-function s(name, type = 'open', color) {
+// s(name, type, color, conversionAction)
+// conversionAction defaults to 'none' — only pass 'convert_to_client' for stages
+// that should create a Client record (e.g. Sales → Won).
+// Recruitment "Hired", Internship "Joined", Education "Enrolled" must use 'none'.
+function s(name, type = 'open', color, conversionAction = 'none') {
   return {
     name,
     type: type || 'open',
     color: color || (type === 'won' ? STAGE_COLORS.won : type === 'lost' ? STAGE_COLORS.lost : STAGE_COLORS.open),
     probability: type === 'won' ? 100 : type === 'lost' ? 0 : 0,
+    conversionAction,
   };
 }
 
@@ -920,11 +925,38 @@ function listIndustries() {
  * @param {string|ObjectId} [createdBy] - user who created them
  * @returns {Promise<Array>} - created Pipeline documents
  */
+// ── Industries where "Won" does NOT mean a paying Client was acquired ──────────
+// In these pipelines the positive-closure stage represents a DIFFERENT outcome:
+// a placed/hired candidate, an intern, or an outsourced placement — not a billing
+// relationship between the business and a paying customer.
+//
+// Classification rules:
+//   recruitment_hr      → "Hired"  = candidate placed internally.   Hired ≠ Client.
+//   internship_training → "Joined" = intern onboarded.              Joined ≠ Client.
+//   recruitment_agency  → "Joined" = candidate placed at client co. Joined ≠ Client
+//                         (the hiring company is the agency's client, not the candidate)
+//
+// NOT in this set (paying customer relationship is legitimate):
+//   education_college   → "Enrolled" = paying student.              May be a Client.
+//   edtech              → "Enrolled" = paying subscriber/student.   May be a Client.
+//
+// All other industries default to commercial behaviour:
+//   type:'won' stage    → conversionAction = 'convert_to_client'
+//   all other stages    → conversionAction = 'none'
+//
+// An admin can always override per-stage via Settings → Pipelines → Conversion Action.
+const NON_CLIENT_CONVERSION_INDUSTRIES = new Set([
+  'recruitment_hr',      // Hired   ≠ Client
+  'internship_training', // Joined  ≠ Client
+  'recruitment_agency',  // Joined  ≠ Client (placed candidate ≠ the agency's billing client)
+]);
+
 async function createDefaultPipelinesForTenant(tenantId, industryKey, createdBy) {
   const Pipeline = require('../models/Pipeline');
   const template = getTemplate(industryKey || 'general');
 
   const created = [];
+  const isNonClientIndustry = NON_CLIENT_CONVERSION_INDUSTRIES.has(industryKey || '');
 
   // Check if tenant already has any pipelines
   const existingCount = await Pipeline.countDocuments({ tenantId });
@@ -936,14 +968,37 @@ async function createDefaultPipelinesForTenant(tenantId, industryKey, createdBy)
     const existing = await Pipeline.findOne({ tenantId, name: tpl.name });
     if (existing) continue;
 
-    const stages = tpl.stages.map((stage, idx) => ({
-      name: stage.name,
-      key: stage.name.toLowerCase().replace(/[^a-z0-9]+/g, '_'),
-      order: idx,
-      type: stage.type || 'open',
-      color: stage.color || '#6366f1',
-      probability: stage.probability || (stage.type === 'won' ? 100 : 0),
-    }));
+    const stages = tpl.stages.map((stage, idx) => {
+      // Determine conversionAction from industry classification + stage type.
+      // NEVER from stage.name — that would be fragile name-matching.
+      //
+      // The s() factory always emits conversionAction:'none' (safe default for template data).
+      // We intentionally ignore that value here and derive the correct value at runtime:
+      //
+      //   Non-client industry (recruitment_hr, internship_training, recruitment_agency):
+      //     → ALL stages → 'none'  (Hired/Joined ≠ Client regardless of stage type)
+      //
+      //   Commercial industry + type:'won':
+      //     → 'convert_to_client'  (Sales Won, Delivered, Policy Issued, etc. = Client)
+      //
+      //   All other stages (type:'open' or type:'lost', any industry):
+      //     → 'none'
+      //
+      // An admin can always override this per-stage via Settings → Pipelines → Conversion Action.
+      const conversionAction = (isNonClientIndustry || stage.type !== 'won')
+        ? 'none'
+        : 'convert_to_client';
+
+      return {
+        name: stage.name,
+        key: stage.name.toLowerCase().replace(/[^a-z0-9]+/g, '_'),
+        order: idx,
+        type: stage.type || 'open',
+        color: stage.color || '#6366f1',
+        probability: stage.probability || (stage.type === 'won' ? 100 : 0),
+        conversionAction,
+      };
+    });
 
     const pipeline = await Pipeline.create({
       tenantId,

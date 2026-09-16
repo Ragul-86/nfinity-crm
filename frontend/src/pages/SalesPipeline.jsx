@@ -628,7 +628,12 @@ export default function SalesPipeline() {
   const handleMoveToWon = lead => {
     if (!wonStage) { toast.error('This pipeline has no "Won" stage'); return }
     moveToStage(lead, wonStage)
-    setWonDialog(lead)
+    // Only offer Client conversion when the Won stage is explicitly configured for it.
+    // conversionAction === 'convert_to_client' must be set in Settings → Pipelines.
+    // Recruitment "Hired", Internship "Joined", etc. will NOT show this dialog.
+    if (wonStage.conversionAction === 'convert_to_client') {
+      setWonDialog(lead)
+    }
   }
 
   // ── Mark as Lost ────────────────────────────────────────────────────────────
@@ -721,7 +726,10 @@ export default function SalesPipeline() {
         handleMoveToLost(dragging.lead, dragOver)
       } else {
         moveToStage(dragging.lead, targetStage)
-        if (targetStage.type === 'won') setWonDialog(dragging.lead)
+        // Only show conversion dialog when the stage is explicitly configured for it.
+        // A type:'won' stage (Hired, Joined, Enrolled) will NOT trigger this unless
+        // conversionAction === 'convert_to_client' is set in Settings → Pipelines.
+        if (targetStage.conversionAction === 'convert_to_client') setWonDialog(dragging.lead)
       }
     }
     setDragging(null); setDragOver(null)

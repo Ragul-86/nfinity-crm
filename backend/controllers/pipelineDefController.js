@@ -122,12 +122,13 @@ exports.createPipeline = async (req, res, next) => {
 
     // Normalise stages
     const normStages = (stages || []).map((s, i) => ({
-      name:        String(s.name || '').trim(),
-      key:         String(s.key || s.name || '').toLowerCase().replace(/[^a-z0-9]+/g, '_'),
-      order:       i,
-      type:        ['open', 'won', 'lost'].includes(s.type) ? s.type : 'open',
-      color:       s.color || '#6366f1',
-      probability: Number(s.probability ?? (s.type === 'won' ? 100 : 0)),
+      name:             String(s.name || '').trim(),
+      key:              String(s.key || s.name || '').toLowerCase().replace(/[^a-z0-9]+/g, '_'),
+      order:            i,
+      type:             ['open', 'won', 'lost'].includes(s.type) ? s.type : 'open',
+      color:            s.color || '#6366f1',
+      probability:      Number(s.probability ?? (s.type === 'won' ? 100 : 0)),
+      conversionAction: ['none', 'convert_to_client'].includes(s.conversionAction) ? s.conversionAction : 'none',
     })).filter(s => s.name);
 
     const pipeline = await Pipeline.create({
@@ -173,12 +174,13 @@ exports.updatePipeline = async (req, res, next) => {
     if (Array.isArray(stages)) {
       pipeline.stages = stages.map((s, i) => {
         const stageDoc = {
-          name:        String(s.name || '').trim(),
-          key:         String(s.key || s.name || '').toLowerCase().replace(/[^a-z0-9]+/g, '_'),
-          order:       typeof s.order === 'number' ? s.order : i,
-          type:        ['open', 'won', 'lost'].includes(s.type) ? s.type : 'open',
-          color:       s.color || '#6366f1',
-          probability: Number(s.probability ?? (s.type === 'won' ? 100 : 0)),
+          name:             String(s.name || '').trim(),
+          key:              String(s.key || s.name || '').toLowerCase().replace(/[^a-z0-9]+/g, '_'),
+          order:            typeof s.order === 'number' ? s.order : i,
+          type:             ['open', 'won', 'lost'].includes(s.type) ? s.type : 'open',
+          color:            s.color || '#6366f1',
+          probability:      Number(s.probability ?? (s.type === 'won' ? 100 : 0)),
+          conversionAction: ['none', 'convert_to_client'].includes(s.conversionAction) ? s.conversionAction : 'none',
         };
         // Preserve existing _id when updating existing stages
         if (s._id && mongoose.Types.ObjectId.isValid(s._id)) {
@@ -573,6 +575,13 @@ exports.moveLead = async (req, res, next) => {
     }
 
     await lead.save();
-    res.json({ success: true, data: lead });
+
+    // Return conversionAction so the frontend knows whether to offer Client conversion.
+    // This is the ONLY authoritative signal — never inferred from stage name or type.
+    res.json({
+      success:          true,
+      data:             lead,
+      conversionAction: stage.conversionAction || 'none',
+    });
   } catch (e) { next(e); }
 };
