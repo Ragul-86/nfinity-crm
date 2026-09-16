@@ -1,12 +1,30 @@
-import { useState, useRef, useCallback, useMemo } from 'react'
+/**
+ * SalesPipeline.jsx — Dynamic Pipeline Kanban
+ *
+ * Replaces the old hardcoded "Sales Pipeline" view.
+ *
+ * Architecture:
+ *   1. Loads all tenant pipelines from /api/pipeline-defs
+ *   2. Lets the user select a pipeline via a dropdown (persisted in localStorage)
+ *   3. Renders the selected pipeline's actual stages from MongoDB
+ *   4. Fetches leads filtered by pipelineId + groups by stageId client-side
+ *   5. Drag-and-drop calls PUT /api/pipeline-defs/leads/:id/move
+ *
+ * No stage names, stage orders, or pipeline names are hard-coded.
+ * Adding / renaming / reordering stages in Settings → Pipelines is
+ * immediately reflected here on next load.
+ */
+
+import { useState, useCallback, useMemo, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
-  Plus, Search, Download, UserPlus, X, ChevronDown, ChevronRight,
+  Plus, Search, Download, UserPlus, X, ChevronDown,
   Phone, Mail, Building2, IndianRupee, Calendar, Tag, MoreVertical,
   Eye, Edit2, StickyNote, Clock, PhoneCall, MessageCircle,
   TrendingUp, TrendingDown, BarChart2, Filter, CheckSquare2, Square,
-  Archive, Trash2, Users, AlertCircle, CheckCheck,
+  Archive, Trash2, Users, AlertCircle, CheckCheck, GitBranch,
+  RefreshCw,
 } from 'lucide-react'
 import api from '@/services/api'
 import { Button } from '@/components/ui/button'
@@ -17,65 +35,73 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Textarea } from '@/components/ui/textarea'
+import { Skeleton } from '@/components/ui/skeleton'
 import { useForm } from 'react-hook-form'
 import toast from 'react-hot-toast'
 import { format, isPast, isToday } from 'date-fns'
 import LeadDetailModal from '@/components/leads/LeadDetailModal'
 import FollowUpModal from '@/components/leads/FollowUpModal'
 
-const STAGES = [
-  { key: 'new_lead',       label: 'New Lead',        color: 'bg-indigo-500',  light: 'bg-indigo-500/10 text-indigo-400 border-indigo-500/30', probability: 5 },
-  { key: 'contacted',      label: 'Contacted',       color: 'bg-blue-500',    light: 'bg-blue-500/10 text-blue-400 border-blue-500/30', probability: 15 },
-  { key: 'discovery_call', label: 'Discovery Call',  color: 'bg-cyan-500',    light: 'bg-cyan-500/10 text-cyan-400 border-cyan-500/30', probability: 30 },
-  { key: 'proposal_sent',  label: 'Proposal Sent',   color: 'bg-amber-500',   light: 'bg-amber-500/10 text-amber-400 border-amber-500/30', probability: 50 },
-  { key: 'negotiation',    label: 'Negotiation',     color: 'bg-orange-500',  light: 'bg-orange-500/10 text-orange-400 border-orange-500/30', probability: 70 },
-  { key: 'won',            label: '✅ Won',           color: 'bg-green-500',   light: 'bg-green-500/10 text-green-400 border-green-500/30', probability: 100 },
-  { key: 'lost',           label: '❌ Lost',          color: 'bg-red-500',     light: 'bg-red-500/10 text-red-400 border-red-500/30', probability: 0 },
-]
+// ─── localStorage key to persist selected pipeline across page reloads ────────
+const LS_PIPELINE_KEY = 'crm_selected_pipeline_id'
 
-const LOST_REASONS = [
-  { value: 'budget',       label: 'Budget / Price' },
-  { value: 'no_response',  label: 'No Response' },
-  { value: 'competitor',   label: 'Chose Competitor' },
-  { value: 'duplicate',    label: 'Duplicate Lead' },
-  { value: 'invalid',      label: 'Invalid Lead' },
-  { value: 'timing',       label: 'Bad Timing' },
-  { value: 'other',        label: 'Other' },
-]
-
+// ─── Static lookup data ───────────────────────────────────────────────────────
 const SOURCES = [
   'website', 'referral', 'social_media', 'cold_call', 'email', 'event',
   'meta_ads', 'lead_form', 'facebook_ads', 'instagram_ads', 'whatsapp',
   'google_ads', 'landing_page', 'import', 'api', 'webhook', 'manual', 'other',
 ]
 const PRIORITIES = ['low', 'medium', 'high', 'urgent']
-
 const PRIORITY_COLORS = {
   urgent: 'bg-red-500/10 text-red-400 border-red-500/30',
   high:   'bg-orange-500/10 text-orange-400 border-orange-500/30',
   medium: 'bg-amber-500/10 text-amber-400 border-amber-500/30',
   low:    'bg-blue-500/10 text-blue-400 border-blue-500/30',
 }
+const LOST_REASONS = [
+  { value: 'budget',      label: 'Budget / Price' },
+  { value: 'no_response', label: 'No Response' },
+  { value: 'competitor',  label: 'Chose Competitor' },
+  { value: 'duplicate',   label: 'Duplicate Lead' },
+  { value: 'invalid',     label: 'Invalid Lead' },
+  { value: 'timing',      label: 'Bad Timing' },
+  { value: 'other',       label: 'Other' },
+]
 
 function fmt(n) {
-  if (!n || n === 0) return '₹0'
-  if (n >= 1000000) return `₹${(n / 1000000).toFixed(1)}M`
-  if (n >= 100000) return `₹${(n / 100000).toFixed(1)}L`
-  if (n >= 1000) return `₹${(n / 1000).toFixed(0)}K`
+  if (!n) return '₹0'
+  if (n >= 1_000_000) return `₹${(n / 1_000_000).toFixed(1)}M`
+  if (n >= 100_000)   return `₹${(n / 100_000).toFixed(1)}L`
+  if (n >= 1_000)     return `₹${(n / 1_000).toFixed(0)}K`
   return `₹${n.toLocaleString()}`
 }
 
-// ── Analytics KPI Bar ─────────────────────────────────────────────────────────
-function AnalyticsBar({ analytics, forecast }) {
-  const a = analytics?.data || {}
-  const f = forecast?.data || {}
+// ─── Stage type → display styles ─────────────────────────────────────────────
+function stageTypeStyle(type) {
+  if (type === 'won')  return 'bg-green-500'
+  if (type === 'lost') return 'bg-red-500'
+  return 'bg-indigo-500'
+}
+
+// ─── KPI Bar (computed from fetched leads) ────────────────────────────────────
+function KpiBar({ leads, pipelineName }) {
+  const all = leads || []
+  const won  = all.filter(l => l.stageType === 'won')
+  const lost = all.filter(l => l.stageType === 'lost')
+  const open = all.filter(l => l.stageType === 'open')
+  const wonRevenue  = won.reduce((s, l) => s + (l.value || 0), 0)
+  const openValue   = open.reduce((s, l) => s + (l.value || 0), 0)
+  const convRate    = won.length + lost.length
+    ? Math.round(won.length / (won.length + lost.length) * 100)
+    : 0
+
   const kpis = [
-    { label: 'Total Leads',     value: a.totalLeads || 0,           color: 'text-blue-400',   icon: Users },
-    { label: 'Pipeline Value',  value: fmt(a.pipelineValue),         color: 'text-emerald-400', icon: IndianRupee },
-    { label: 'Avg Deal Size',   value: fmt(a.avgDealSize),           color: 'text-amber-400',  icon: TrendingUp },
-    { label: 'Conversion Rate', value: `${a.conversionRate || 0}%`, color: 'text-green-400',  icon: CheckCheck },
-    { label: 'Won Revenue',     value: fmt(a.wonRevenue),            color: 'text-green-400',  icon: TrendingUp },
-    { label: 'Projected',       value: fmt(f.projectedRevenue),      color: 'text-purple-400', icon: BarChart2 },
+    { label: 'Total Leads',     value: all.length,         color: 'text-blue-400',    icon: Users },
+    { label: 'Open Value',      value: fmt(openValue),     color: 'text-emerald-400', icon: IndianRupee },
+    { label: 'Won Leads',       value: won.length,         color: 'text-green-400',   icon: CheckCheck },
+    { label: 'Won Revenue',     value: fmt(wonRevenue),    color: 'text-green-400',   icon: TrendingUp },
+    { label: 'Lost Leads',      value: lost.length,        color: 'text-red-400',     icon: TrendingDown },
+    { label: 'Conversion Rate', value: `${convRate}%`,     color: 'text-purple-400',  icon: BarChart2 },
   ]
   return (
     <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 mb-4">
@@ -92,10 +118,10 @@ function AnalyticsBar({ analytics, forecast }) {
   )
 }
 
-// ── Lost Reason Dialog ────────────────────────────────────────────────────────
+// ─── Lost Reason Dialog ───────────────────────────────────────────────────────
 function LostReasonDialog({ open, onClose, onConfirm, leadName, loading }) {
   const [reason, setReason] = useState('')
-  const [note, setNote] = useState('')
+  const [note,   setNote  ] = useState('')
   return (
     <Dialog open={open} onOpenChange={v => { if (!v) onClose() }}>
       <DialogContent className="max-w-sm" aria-describedby={undefined}>
@@ -113,21 +139,13 @@ function LostReasonDialog({ open, onClose, onConfirm, leadName, loading }) {
             <Select onValueChange={setReason}>
               <SelectTrigger><SelectValue placeholder="Select reason…" /></SelectTrigger>
               <SelectContent>
-                {LOST_REASONS.map(r => (
-                  <SelectItem key={r.value} value={r.value}>{r.label}</SelectItem>
-                ))}
+                {LOST_REASONS.map(r => <SelectItem key={r.value} value={r.value}>{r.label}</SelectItem>)}
               </SelectContent>
             </Select>
           </div>
           <div className="space-y-1.5">
             <Label>Notes (optional)</Label>
-            <Textarea
-              value={note}
-              onChange={e => setNote(e.target.value)}
-              placeholder="Any additional context…"
-              rows={2}
-              className="resize-none"
-            />
+            <Textarea value={note} onChange={e => setNote(e.target.value)} placeholder="Any additional context…" rows={2} className="resize-none" />
           </div>
         </div>
         <DialogFooter>
@@ -145,7 +163,7 @@ function LostReasonDialog({ open, onClose, onConfirm, leadName, loading }) {
   )
 }
 
-// ── Won Dialog ────────────────────────────────────────────────────────────────
+// ─── Won Dialog ───────────────────────────────────────────────────────────────
 function WonDialog({ open, onClose, onConvert, onSkip, leadName, loading }) {
   return (
     <Dialog open={open} onOpenChange={v => { if (!v) onClose() }}>
@@ -174,69 +192,74 @@ function WonDialog({ open, onClose, onConvert, onSkip, leadName, loading }) {
   )
 }
 
-// ── Quick Note Dialog ─────────────────────────────────────────────────────────
+// ─── Quick Note Dialog ────────────────────────────────────────────────────────
 function QuickNoteDialog({ open, onClose, leadId, leadName }) {
   const [content, setContent] = useState('')
   const [loading, setLoading] = useState(false)
   const qc = useQueryClient()
-
   const save = async () => {
     if (!content.trim()) return
     setLoading(true)
     try {
       await api.post(`/leads/${leadId}/notes`, { content })
       toast.success('Note added')
-      qc.invalidateQueries(['pipeline-kanban'])
+      qc.invalidateQueries({ queryKey: ['pipeline-kanban'] })
       setContent(''); onClose()
     } catch { toast.error('Failed to add note') }
     finally { setLoading(false) }
   }
-
   return (
     <Dialog open={open} onOpenChange={v => { if (!v) { setContent(''); onClose() } }}>
       <DialogContent className="max-w-sm" aria-describedby={undefined}>
-        <DialogHeader>
-          <DialogTitle>Add Note — {leadName}</DialogTitle>
-        </DialogHeader>
-        <Textarea
-          value={content}
-          onChange={e => setContent(e.target.value)}
-          placeholder="Type your note here…"
-          rows={4}
-          className="resize-none"
-          autoFocus
-        />
+        <DialogHeader><DialogTitle>Add Note — {leadName}</DialogTitle></DialogHeader>
+        <Textarea value={content} onChange={e => setContent(e.target.value)} placeholder="Type your note here…" rows={4} className="resize-none" autoFocus />
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>Cancel</Button>
-          <Button onClick={save} disabled={!content.trim() || loading}>
-            {loading ? 'Saving…' : 'Save Note'}
-          </Button>
+          <Button onClick={save} disabled={!content.trim() || loading}>{loading ? 'Saving…' : 'Save Note'}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
   )
 }
 
-// ── Kanban Card ───────────────────────────────────────────────────────────────
+// ─── Pipeline Empty State ─────────────────────────────────────────────────────
+function NoPipelineState({ loading }) {
+  return (
+    <div className="flex flex-col items-center justify-center h-full py-24 text-center gap-3">
+      <GitBranch className="w-10 h-10 text-muted-foreground/40" />
+      {loading ? (
+        <p className="text-muted-foreground text-sm">Loading pipelines…</p>
+      ) : (
+        <>
+          <p className="font-medium">No pipelines found</p>
+          <p className="text-sm text-muted-foreground">
+            Go to Settings → Pipelines to create your first pipeline.
+          </p>
+        </>
+      )}
+    </div>
+  )
+}
+
+// ─── Kanban Card ──────────────────────────────────────────────────────────────
 function KanbanCard({
-  lead, stageKey, selected, onSelect,
+  lead, stageType, stage,
+  selected, onSelect,
   onView, onEdit, onDelete, onMoveToLost, onMoveToWon,
   onAddNote, onFollowUp, onArchive, onConvert,
   dragging, onDragStart,
 }) {
   const isDragging = dragging?.lead._id === lead._id
-
   const nextFU = lead.nextFollowUp
   const fuOverdue = nextFU && isPast(new Date(nextFU.scheduledAt)) && nextFU.status === 'pending'
-  const fuToday = nextFU && isToday(new Date(nextFU.scheduledAt))
-
+  const fuToday   = nextFU && isToday(new Date(nextFU.scheduledAt))
   const closeOverdue = lead.expectedCloseDate
     && isPast(new Date(lead.expectedCloseDate))
-    && !['won', 'lost'].includes(lead.status)
+    && stageType === 'open'
 
-  const handleCall = e => { e.stopPropagation(); if (lead.phone) window.open(`tel:${lead.phone}`); else toast.error('No phone number') }
-  const handleWhatsApp = e => { e.stopPropagation(); const p = lead.phone?.replace(/\D/g, ''); if (p) window.open(`https://wa.me/${p}`, '_blank'); else toast.error('No phone number') }
-  const handleEmail = e => { e.stopPropagation(); if (lead.email) window.open(`mailto:${lead.email}`); else toast.error('No email') }
+  const handleCall      = e => { e.stopPropagation(); if (lead.phone) window.open(`tel:${lead.phone}`); else toast.error('No phone number') }
+  const handleWhatsApp  = e => { e.stopPropagation(); const p = lead.phone?.replace(/\D/g, ''); if (p) window.open(`https://wa.me/${p}`, '_blank'); else toast.error('No phone number') }
+  const handleEmail     = e => { e.stopPropagation(); if (lead.email) window.open(`mailto:${lead.email}`); else toast.error('No email') }
 
   return (
     <motion.div
@@ -245,24 +268,22 @@ function KanbanCard({
       animate={{ opacity: isDragging ? 0.4 : 1, y: 0 }}
       exit={{ opacity: 0, scale: 0.95 }}
       draggable
-      onDragStart={() => onDragStart(lead, stageKey)}
+      onDragStart={() => onDragStart(lead, stage)}
       className={`bg-card border rounded-lg p-3 cursor-grab active:cursor-grabbing hover:border-primary/50 hover:shadow-sm transition-all select-none relative group ${
         selected ? 'border-primary ring-1 ring-primary/30' : 'border-border'
       }`}
     >
-      {/* Selection checkbox */}
+      {/* Checkbox */}
       <button
         className={`absolute top-2 left-2 z-10 transition-opacity ${selected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}
         onClick={e => { e.stopPropagation(); onSelect(lead._id) }}
-        title="Select"
       >
         {selected
           ? <CheckSquare2 className="w-3.5 h-3.5 text-primary" />
-          : <Square className="w-3.5 h-3.5 text-muted-foreground/50" />
-        }
+          : <Square className="w-3.5 h-3.5 text-muted-foreground/50" />}
       </button>
 
-      {/* Header row */}
+      {/* Header */}
       <div className="flex items-start justify-between gap-2 mb-2 pl-5">
         <button
           className="text-sm font-medium leading-tight line-clamp-1 text-left hover:text-primary transition-colors"
@@ -277,49 +298,33 @@ function KanbanCard({
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-44">
-            <DropdownMenuItem onClick={() => onView(lead)}>
-              <Eye className="w-3.5 h-3.5 mr-2" />View Details
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => onEdit(lead)}>
-              <Edit2 className="w-3.5 h-3.5 mr-2" />Edit
-            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => onView(lead)}><Eye className="w-3.5 h-3.5 mr-2" />View Details</DropdownMenuItem>
+            <DropdownMenuItem onClick={() => onEdit(lead)}><Edit2 className="w-3.5 h-3.5 mr-2" />Edit</DropdownMenuItem>
             <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={() => onAddNote(lead)}>
-              <StickyNote className="w-3.5 h-3.5 mr-2" />Add Note
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => onFollowUp(lead)}>
-              <Clock className="w-3.5 h-3.5 mr-2" />Schedule Follow-up
-            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => onAddNote(lead)}><StickyNote className="w-3.5 h-3.5 mr-2" />Add Note</DropdownMenuItem>
+            <DropdownMenuItem onClick={() => onFollowUp(lead)}><Clock className="w-3.5 h-3.5 mr-2" />Schedule Follow-up</DropdownMenuItem>
             <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={handleCall}>
-              <PhoneCall className="w-3.5 h-3.5 mr-2" />Call
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={handleWhatsApp}>
-              <MessageCircle className="w-3.5 h-3.5 mr-2" />WhatsApp
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={handleEmail}>
-              <Mail className="w-3.5 h-3.5 mr-2" />Email
-            </DropdownMenuItem>
+            <DropdownMenuItem onClick={handleCall}><PhoneCall className="w-3.5 h-3.5 mr-2" />Call</DropdownMenuItem>
+            <DropdownMenuItem onClick={handleWhatsApp}><MessageCircle className="w-3.5 h-3.5 mr-2" />WhatsApp</DropdownMenuItem>
+            <DropdownMenuItem onClick={handleEmail}><Mail className="w-3.5 h-3.5 mr-2" />Email</DropdownMenuItem>
             <DropdownMenuSeparator />
-            {stageKey !== 'won' && stageKey !== 'lost' && (
+            {stageType !== 'won' && stageType !== 'lost' && (
               <DropdownMenuItem className="text-green-500" onClick={() => onMoveToWon(lead)}>
                 <CheckCheck className="w-3.5 h-3.5 mr-2" />Mark as Won
               </DropdownMenuItem>
             )}
-            {stageKey !== 'lost' && (
+            {stageType !== 'lost' && (
               <DropdownMenuItem className="text-red-400" onClick={() => onMoveToLost(lead)}>
                 <TrendingDown className="w-3.5 h-3.5 mr-2" />Mark as Lost
               </DropdownMenuItem>
             )}
-            {stageKey === 'won' && !lead.convertedClientId && (
+            {stageType === 'won' && !lead.convertedClientId && (
               <DropdownMenuItem className="text-green-500" onClick={() => onConvert(lead)}>
                 <UserPlus className="w-3.5 h-3.5 mr-2" />Convert to Client
               </DropdownMenuItem>
             )}
             <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={() => onArchive(lead)}>
-              <Archive className="w-3.5 h-3.5 mr-2" />Archive
-            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => onArchive(lead)}><Archive className="w-3.5 h-3.5 mr-2" />Archive</DropdownMenuItem>
             <DropdownMenuItem className="text-destructive" onClick={() => onDelete(lead._id)}>
               <Trash2 className="w-3.5 h-3.5 mr-2" />Delete
             </DropdownMenuItem>
@@ -330,18 +335,14 @@ function KanbanCard({
       {/* Company */}
       {lead.company && (
         <div className="flex items-center gap-1 text-[11px] text-muted-foreground mb-1.5">
-          <Building2 className="w-3 h-3 shrink-0" />
-          <span className="truncate">{lead.company}</span>
+          <Building2 className="w-3 h-3 shrink-0" /><span className="truncate">{lead.company}</span>
         </div>
       )}
 
       {/* Phone + Source */}
       <div className="flex items-center gap-2 flex-wrap mb-1.5">
         {lead.phone && (
-          <button
-            className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground transition-colors"
-            onClick={handleCall}
-          >
+          <button className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground transition-colors" onClick={handleCall}>
             <Phone className="w-2.5 h-2.5" />{lead.phone}
           </button>
         )}
@@ -357,9 +358,7 @@ function KanbanCard({
         <span className={`text-[10px] px-1.5 py-0.5 rounded border font-medium ${PRIORITY_COLORS[lead.priority] || ''}`}>
           {lead.priority}
         </span>
-        {lead.value > 0 && (
-          <span className="text-[11px] font-semibold">{fmt(lead.value)}</span>
-        )}
+        {lead.value > 0 && <span className="text-[11px] font-semibold">{fmt(lead.value)}</span>}
       </div>
 
       {/* Expected Close */}
@@ -396,7 +395,7 @@ function KanbanCard({
         </div>
       )}
 
-      {/* Footer: assigned user + converted badge */}
+      {/* Footer */}
       <div className="mt-2 pt-2 border-t border-border flex items-center justify-between gap-1.5">
         {lead.assignedTo?.length > 0 ? (
           <div className="flex items-center gap-1 min-w-0">
@@ -417,51 +416,35 @@ function KanbanCard({
   )
 }
 
-// ── Bulk Action Bar ───────────────────────────────────────────────────────────
-function BulkBar({ selectedIds, onClear, onBulk, employees }) {
+// ─── Bulk Action Bar ──────────────────────────────────────────────────────────
+function BulkBar({ selectedIds, onClear, onBulkArchive, onBulkDelete, onBulkStage, stages, employees }) {
+  const openStages = (stages || []).filter(s => s.type === 'open')
   return (
     <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 bg-card border border-primary/40 rounded-xl shadow-2xl px-4 py-3 flex items-center gap-3 flex-wrap">
       <span className="text-sm font-medium text-primary whitespace-nowrap">{selectedIds.length} selected</span>
       <div className="h-4 w-px bg-border" />
 
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button size="sm" variant="outline" className="gap-1.5 h-8">Move Stage <ChevronDown className="w-3.5 h-3.5" /></Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent>
-          {STAGES.filter(s => !['won', 'lost'].includes(s.key)).map(s => (
-            <DropdownMenuItem key={s.key} onClick={() => onBulk('stage', s.key)}>{s.label}</DropdownMenuItem>
-          ))}
-        </DropdownMenuContent>
-      </DropdownMenu>
+      {openStages.length > 0 && (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button size="sm" variant="outline" className="gap-1.5 h-8">Move Stage <ChevronDown className="w-3.5 h-3.5" /></Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent>
+            {openStages.map(s => (
+              <DropdownMenuItem key={String(s._id)} onClick={() => onBulkStage(s)}>
+                <span className="w-2 h-2 rounded-full mr-2 inline-block" style={{ background: s.color || '#6366f1' }} />
+                {s.name}
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      )}
 
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button size="sm" variant="outline" className="gap-1.5 h-8">Priority <ChevronDown className="w-3.5 h-3.5" /></Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent>
-          {PRIORITIES.map(p => (
-            <DropdownMenuItem key={p} onClick={() => onBulk('priority', p)} className="capitalize">{p}</DropdownMenuItem>
-          ))}
-        </DropdownMenuContent>
-      </DropdownMenu>
-
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button size="sm" variant="outline" className="gap-1.5 h-8">Assign <ChevronDown className="w-3.5 h-3.5" /></Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent className="max-h-48 overflow-y-auto">
-          {(employees || []).map(e => (
-            <DropdownMenuItem key={e._id} onClick={() => onBulk('assign', e._id)}>{e.name}</DropdownMenuItem>
-          ))}
-        </DropdownMenuContent>
-      </DropdownMenu>
-
-      <Button size="sm" variant="outline" className="h-8" onClick={() => onBulk('archive')}>
+      <Button size="sm" variant="outline" className="h-8" onClick={onBulkArchive}>
         <Archive className="w-3.5 h-3.5 mr-1.5" />Archive
       </Button>
       <Button size="sm" variant="destructive" className="h-8" onClick={() => {
-        if (confirm(`Delete ${selectedIds.length} leads? This cannot be undone.`)) onBulk('delete')
+        if (confirm(`Delete ${selectedIds.length} leads? This cannot be undone.`)) onBulkDelete()
       }}>
         <Trash2 className="w-3.5 h-3.5 mr-1.5" />Delete
       </Button>
@@ -472,123 +455,279 @@ function BulkBar({ selectedIds, onClear, onBulk, employees }) {
   )
 }
 
-// ── Main Component ────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Main Component
+// ─────────────────────────────────────────────────────────────────────────────
 export default function SalesPipeline() {
-  const [search, setSearch] = useState('')
-  const [filterSource, setFilterSource] = useState('')
-  const [filterPriority, setFilterPriority] = useState('')
-  const [filterAssigned, setFilterAssigned] = useState('')
-  const [showFilters, setShowFilters] = useState(false)
-  const [showModal, setShowModal] = useState(false)
-  const [editLead, setEditLead] = useState(null)
-  const [detailLead, setDetailLead] = useState(null)
-  const [dragging, setDragging] = useState(null)
-  const [dragOver, setDragOver] = useState(null)
-  const [lostDialog, setLostDialog] = useState(null)
-  const [wonDialog, setWonDialog] = useState(null)
-  const [convertConfirm, setConvertConfirm] = useState(null)
-  const [noteDialog, setNoteDialog] = useState(null)
-  const [followUpLead, setFollowUpLead] = useState(null)
-  const [selectedIds, setSelectedIds] = useState([])
   const queryClient = useQueryClient()
 
+  // ── UI state ────────────────────────────────────────────────────────────────
+  const [search,         setSearch        ] = useState('')
+  const [filterSource,   setFilterSource  ] = useState('')
+  const [filterPriority, setFilterPriority] = useState('')
+  const [filterAssigned, setFilterAssigned] = useState('')
+  const [showFilters,    setShowFilters   ] = useState(false)
+  const [showModal,      setShowModal     ] = useState(false)
+  const [editLead,       setEditLead      ] = useState(null)
+  const [detailLead,     setDetailLead    ] = useState(null)
+  const [dragging,       setDragging      ] = useState(null)   // { lead, fromStage }
+  const [dragOver,       setDragOver      ] = useState(null)   // stageId string
+  const [lostDialog,     setLostDialog    ] = useState(null)   // { lead, targetStageId }
+  const [wonDialog,      setWonDialog     ] = useState(null)   // lead
+  const [convertConfirm, setConvertConfirm] = useState(null)
+  const [noteDialog,     setNoteDialog    ] = useState(null)
+  const [followUpLead,   setFollowUpLead  ] = useState(null)
+  const [selectedIds,    setSelectedIds   ] = useState([])
+  const [addToStage,     setAddToStage    ] = useState(null)   // stage obj for "Add Lead" prefill
+
+  // ── Pipeline selection (persisted) ──────────────────────────────────────────
+  const [selectedPipelineId, _setSelectedPipelineId] = useState(
+    () => localStorage.getItem(LS_PIPELINE_KEY) || ''
+  )
+  const setSelectedPipelineId = id => {
+    _setSelectedPipelineId(id)
+    if (id) localStorage.setItem(LS_PIPELINE_KEY, id)
+    else    localStorage.removeItem(LS_PIPELINE_KEY)
+    setSelectedIds([])
+  }
+
+  // ── Load pipelines ──────────────────────────────────────────────────────────
+  const { data: pipelinesRaw, isLoading: loadingPipelines } = useQuery({
+    queryKey: ['pipelines-list'],
+    queryFn: () => api.get('/pipeline-defs').then(r => r.data.data || []),
+    staleTime: 5 * 60 * 1000,
+  })
+  const pipelines = pipelinesRaw || []
+
+  // Auto-select default pipeline when list first loads
+  useEffect(() => {
+    if (pipelines.length === 0) return
+    // If saved ID is still valid, keep it
+    if (selectedPipelineId && pipelines.find(p => p._id === selectedPipelineId)) return
+    // Otherwise pick the default (or first)
+    const fallback = pipelines.find(p => p.isDefault) || pipelines[0]
+    if (fallback) setSelectedPipelineId(fallback._id)
+  }, [pipelines]) // eslint-disable-line
+
+  const activePipeline = pipelines.find(p => p._id === selectedPipelineId) || null
+  const stages = activePipeline
+    ? [...activePipeline.stages].sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+    : []
+  const wonStage  = stages.find(s => s.type === 'won')
+  const lostStage = stages.find(s => s.type === 'lost')
+
+  // ── Load leads for selected pipeline ───────────────────────────────────────
   const kanbanParams = useMemo(() => {
     const p = {}
-    if (search) p.search = search
-    if (filterSource) p.source = filterSource
+    if (search)         p.search   = search
+    if (filterSource)   p.source   = filterSource
     if (filterPriority) p.priority = filterPriority
     if (filterAssigned) p.assignedTo = filterAssigned
     return p
   }, [search, filterSource, filterPriority, filterAssigned])
 
-  const { data: kanbanData, isLoading } = useQuery({
-    queryKey: ['pipeline-kanban', kanbanParams],
-    queryFn: () => api.get('/pipeline/kanban', { params: kanbanParams }).then(r => r.data.data),
+  const { data: leadsData, isLoading: loadingLeads } = useQuery({
+    queryKey: ['pipeline-kanban', selectedPipelineId, kanbanParams],
+    queryFn: () => selectedPipelineId
+      ? api.get('/leads', {
+          params: { pipelineId: selectedPipelineId, limit: 1000, ...kanbanParams },
+        }).then(r => r.data.data || [])
+      : Promise.resolve([]),
+    enabled: !!selectedPipelineId,
     refetchInterval: 30_000,
     refetchOnWindowFocus: true,
   })
+  const isLoading = loadingPipelines || loadingLeads
 
-  const { data: analyticsData } = useQuery({
-    queryKey: ['pipeline-analytics'],
-    queryFn: () => api.get('/pipeline/analytics').then(r => r.data),
-    refetchInterval: 60_000,
-  })
+  // ── Group leads by stageId ──────────────────────────────────────────────────
+  const kanbanData = useMemo(() => {
+    const map = {}
+    stages.forEach(s => {
+      map[String(s._id)] = { leads: [], count: 0, totalValue: 0 }
+    })
+    ;(leadsData || []).forEach(lead => {
+      const key = lead.stageId ? String(lead.stageId) : '__unassigned'
+      if (!map[key]) map[key] = { leads: [], count: 0, totalValue: 0 }
+      map[key].leads.push(lead)
+      map[key].count++
+      map[key].totalValue += lead.value || 0
+    })
+    return map
+  }, [leadsData, stages])
 
-  const { data: forecastData } = useQuery({
-    queryKey: ['pipeline-forecast'],
-    queryFn: () => api.get('/pipeline/forecast').then(r => r.data),
-    refetchInterval: 60_000,
-  })
-
+  // ── Employees ───────────────────────────────────────────────────────────────
   const { data: employees } = useQuery({
     queryKey: ['employees-list'],
     queryFn: () => api.get('/users', { params: { limit: 100 } }).then(r => r.data.data),
   })
 
+  // ── Invalidate helpers ──────────────────────────────────────────────────────
+  const invalidate = useCallback(() => {
+    queryClient.invalidateQueries({ queryKey: ['pipeline-kanban'] })
+    queryClient.invalidateQueries({ queryKey: ['pipelines-list'] })
+    queryClient.invalidateQueries({ queryKey: ['leads'] })
+  }, [queryClient])
+
+  // ── Create / Edit Lead ──────────────────────────────────────────────────────
   const { register, handleSubmit, reset, setValue, watch, formState: { isSubmitting } } = useForm()
 
-  const invalidate = () => {
-    queryClient.invalidateQueries(['pipeline-kanban'])
-    queryClient.invalidateQueries(['pipeline-analytics'])
-    queryClient.invalidateQueries(['pipeline-forecast'])
+  const openAdd = (stage = null) => {
+    setEditLead(null)
+    setAddToStage(stage)
+    reset({ priority: 'medium', source: 'other' })
+    setShowModal(true)
+  }
+  const openEdit = lead => {
+    setEditLead(lead)
+    setAddToStage(null)
+    reset({ ...lead, assignedTo: lead.assignedTo?.[0]?._id || lead.assignedTo?.[0] })
+    setShowModal(true)
   }
 
   const mutation = useMutation({
-    mutationFn: d => editLead ? api.put(`/pipeline/${editLead._id}`, d) : api.post('/pipeline', d),
+    mutationFn: d => {
+      if (editLead) {
+        return api.put(`/leads/${editLead._id}`, d)
+      }
+      // Create with pipeline assignment
+      const payload = {
+        ...d,
+        pipelineId: selectedPipelineId || undefined,
+        stageId:    addToStage?._id   || stages.find(s => s.type === 'open')?._id || undefined,
+        stageName:  addToStage?.name  || stages.find(s => s.type === 'open')?.name || undefined,
+        stageType:  addToStage?.type  || 'open',
+      }
+      return api.post('/leads', payload)
+    },
     onSuccess: () => {
       invalidate()
       toast.success(editLead ? 'Lead updated' : 'Lead created')
-      setShowModal(false); setEditLead(null); reset()
+      setShowModal(false); setEditLead(null); setAddToStage(null); reset()
     },
     onError: err => toast.error(err.response?.data?.message || 'Error saving lead'),
   })
 
+  // ── Move Lead (pipeline-aware) ──────────────────────────────────────────────
   const moveMutation = useMutation({
-    mutationFn: ({ id, status, lostReason }) => api.put(`/pipeline/${id}/move`, { status, lostReason }),
+    mutationFn: ({ id, stageId, pipelineId }) =>
+      api.put(`/pipeline-defs/leads/${id}/move`, { stageId, pipelineId }),
     onSuccess: () => invalidate(),
     onError: err => toast.error(err.response?.data?.message || 'Failed to move lead'),
   })
 
-  const deleteMutation = useMutation({
-    mutationFn: id => api.delete(`/pipeline/${id}`),
-    onSuccess: () => { invalidate(); toast.success('Lead deleted'); setDetailLead(null) },
-    onError: () => toast.error('Delete failed'),
-  })
+  const moveToStage = useCallback((lead, targetStage) => {
+    if (!targetStage) return
+    moveMutation.mutate({
+      id:         lead._id,
+      stageId:    String(targetStage._id),
+      pipelineId: selectedPipelineId,
+    })
+  }, [moveMutation, selectedPipelineId])
 
+  // ── Mark as Won ─────────────────────────────────────────────────────────────
+  const handleMoveToWon = lead => {
+    if (!wonStage) { toast.error('This pipeline has no "Won" stage'); return }
+    moveToStage(lead, wonStage)
+    setWonDialog(lead)
+  }
+
+  // ── Mark as Lost ────────────────────────────────────────────────────────────
+  const handleMoveToLost = (lead, targetStageId) => {
+    setLostDialog({ lead, targetStageId: targetStageId || lostStage?._id })
+  }
+
+  const confirmLost = (reason, note) => {
+    const { lead, targetStageId } = lostDialog || {}
+    if (!lead || !targetStageId) return
+    const stage = stages.find(s => String(s._id) === String(targetStageId)) || lostStage
+    if (!stage) { toast.error('No lost stage found in this pipeline'); return }
+    moveMutation.mutate(
+      { id: lead._id, stageId: String(stage._id), pipelineId: selectedPipelineId },
+      {
+        onSuccess: async () => {
+          // Also record lost reason as a note
+          if (reason) {
+            try {
+              await api.post(`/leads/${lead._id}/notes`, {
+                content: `Lost reason: ${reason}${note ? ` — ${note}` : ''}`,
+              })
+            } catch (_) {}
+          }
+          setLostDialog(null)
+        },
+      }
+    )
+  }
+
+  // ── Convert to Client ───────────────────────────────────────────────────────
   const convertMutation = useMutation({
     mutationFn: id => api.post(`/pipeline/${id}/convert`),
     onSuccess: data => {
       invalidate()
-      queryClient.invalidateQueries(['clients'])
+      queryClient.invalidateQueries({ queryKey: ['clients'] })
       toast.success(`✅ Converted: ${data.data?.data?.client?.companyName || 'New Client'}`)
       setConvertConfirm(null); setWonDialog(null); setDetailLead(null)
     },
     onError: err => toast.error(err.response?.data?.message || 'Conversion failed'),
   })
 
+  // ── Archive / Delete ────────────────────────────────────────────────────────
   const archiveMutation = useMutation({
-    mutationFn: id => api.put(`/pipeline/${id}/move`, { status: 'archived' }),
+    mutationFn: id => api.put(`/leads/${id}`, { status: 'archived' }),
     onSuccess: () => { invalidate(); toast.success('Lead archived') },
     onError: () => toast.error('Archive failed'),
   })
+  const deleteMutation = useMutation({
+    mutationFn: id => api.delete(`/leads/${id}`),
+    onSuccess: () => { invalidate(); toast.success('Lead deleted'); setDetailLead(null) },
+    onError: () => toast.error('Delete failed'),
+  })
 
+  // ── Bulk actions ────────────────────────────────────────────────────────────
   const bulkMutation = useMutation({
-    mutationFn: ({ action, value }) => api.post('/pipeline/bulk', { action, ids: selectedIds, value }),
+    mutationFn: ({ action, value }) => api.post('/leads/bulk', { action, ids: selectedIds, value }),
     onSuccess: () => { invalidate(); setSelectedIds([]); toast.success('Bulk action applied') },
     onError: err => toast.error(err.response?.data?.message || 'Bulk action failed'),
   })
 
-  const openAdd = (stageKey = 'new_lead') => {
-    setEditLead(null)
-    reset({ status: stageKey, priority: 'medium', source: 'other' })
-    setShowModal(true)
-  }
-  const openEdit = lead => {
-    setEditLead(lead)
-    reset({ ...lead, assignedTo: lead.assignedTo?.[0]?._id || lead.assignedTo?.[0] })
-    setShowModal(true)
+  const handleBulkStage = async targetStage => {
+    if (!targetStage) return
+    let success = 0
+    for (const id of selectedIds) {
+      try {
+        await api.put(`/pipeline-defs/leads/${id}/move`, {
+          stageId:    String(targetStage._id),
+          pipelineId: selectedPipelineId,
+        })
+        success++
+      } catch (_) {}
+    }
+    invalidate()
+    setSelectedIds([])
+    toast.success(`Moved ${success} lead(s) to "${targetStage.name}"`)
   }
 
+  // ── Drag and Drop ───────────────────────────────────────────────────────────
+  const onDragStart = useCallback((lead, fromStage) => {
+    setDragging({ lead, fromStage })
+  }, [])
+
+  const onDragEnd = useCallback(() => {
+    if (dragging && dragOver && dragOver !== String(dragging.fromStage?._id)) {
+      const targetStage = stages.find(s => String(s._id) === dragOver)
+      if (!targetStage) { setDragging(null); setDragOver(null); return }
+
+      if (targetStage.type === 'lost') {
+        handleMoveToLost(dragging.lead, dragOver)
+      } else {
+        moveToStage(dragging.lead, targetStage)
+        if (targetStage.type === 'won') setWonDialog(dragging.lead)
+      }
+    }
+    setDragging(null); setDragOver(null)
+  }, [dragging, dragOver, stages, moveToStage]) // eslint-disable-line
+
+  // ── Export ──────────────────────────────────────────────────────────────────
   const handleExport = async () => {
     try {
       const res = await api.get('/pipeline/export', { responseType: 'blob' })
@@ -597,65 +736,64 @@ export default function SalesPipeline() {
     } catch { toast.error('Export failed') }
   }
 
-  const onDragStart = useCallback((lead, stageKey) => {
-    setDragging({ lead, fromStage: stageKey })
-  }, [])
-
-  const onDragEnd = useCallback(() => {
-    if (dragging && dragOver && dragOver !== dragging.fromStage) {
-      if (dragOver === 'lost') {
-        setLostDialog({ lead: dragging.lead })
-      } else {
-        moveMutation.mutate({ id: dragging.lead._id, status: dragOver })
-        if (dragOver === 'won') setWonDialog(dragging.lead)
-      }
-    }
-    setDragging(null); setDragOver(null)
-  }, [dragging, dragOver, moveMutation])
-
-  const handleMoveToLost = lead => setLostDialog({ lead })
-  const handleMoveToWon = lead => {
-    moveMutation.mutate({ id: lead._id, status: 'won' })
-    setWonDialog(lead)
-  }
-
-  const confirmLost = (reason, note) => {
-    const lead = lostDialog?.lead
-    if (!lead) return
-    moveMutation.mutate(
-      { id: lead._id, status: 'lost', lostReason: note ? `${reason}: ${note}` : reason },
-      { onSuccess: () => setLostDialog(null) }
-    )
-  }
-
   const toggleSelect = id => setSelectedIds(prev =>
     prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]
   )
-
   const hasFilters = filterSource || filterPriority || filterAssigned
 
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Render
+  // ─────────────────────────────────────────────────────────────────────────────
   return (
     <div className="flex flex-col h-full">
-      {/* Header */}
+
+      {/* ── Header ─────────────────────────────────────────────────────────── */}
       <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
-        <div>
-          <h1 className="text-2xl font-bold">Sales Pipeline</h1>
-          <p className="text-muted-foreground text-sm">Drag cards to update stages</p>
+        <div className="flex items-center gap-3 flex-wrap">
+          {/* Pipeline selector */}
+          <div className="flex items-center gap-2">
+            <GitBranch className="w-5 h-5 text-muted-foreground shrink-0" />
+            {loadingPipelines ? (
+              <Skeleton className="h-9 w-48" />
+            ) : pipelines.length === 0 ? (
+              <span className="text-sm text-muted-foreground">No pipelines — go to Settings → Pipelines</span>
+            ) : (
+              <Select value={selectedPipelineId} onValueChange={setSelectedPipelineId}>
+                <SelectTrigger className="h-9 min-w-[200px] font-semibold text-sm">
+                  <SelectValue placeholder="Select pipeline…" />
+                </SelectTrigger>
+                <SelectContent>
+                  {pipelines.map(p => (
+                    <SelectItem key={p._id} value={p._id}>
+                      <div className="flex items-center gap-2">
+                        {p.name}
+                        {p.isDefault && <span className="text-[10px] text-muted-foreground">(default)</span>}
+                        {p.leadCount > 0 && (
+                          <span className="text-[10px] bg-muted rounded-full px-1.5">{p.leadCount}</span>
+                        )}
+                      </div>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+          </div>
+
+          {activePipeline && (
+            <div className="hidden sm:flex items-center gap-1 text-xs text-muted-foreground">
+              {stages.length} stages · {(leadsData || []).length} lead{(leadsData || []).length !== 1 ? 's' : ''}
+            </div>
+          )}
         </div>
+
         <div className="flex items-center gap-2 flex-wrap">
           <div className="relative">
             <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-            <Input
-              className="pl-8 w-48 h-9"
-              placeholder="Search leads…"
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-            />
+            <Input className="pl-8 w-44 h-9" placeholder="Search leads…" value={search} onChange={e => setSearch(e.target.value)} />
           </div>
           <Button
             variant={hasFilters ? 'default' : 'outline'}
-            size="sm"
-            className="gap-1.5"
+            size="sm" className="gap-1.5"
             onClick={() => setShowFilters(v => !v)}
           >
             <Filter className="w-4 h-4" />
@@ -664,21 +802,16 @@ export default function SalesPipeline() {
           <Button variant="outline" size="sm" className="gap-1.5" onClick={handleExport}>
             <Download className="w-4 h-4" />Export
           </Button>
-          <Button size="sm" className="gap-1.5" onClick={() => openAdd()}>
+          <Button size="sm" className="gap-1.5" onClick={() => openAdd()} disabled={!activePipeline}>
             <Plus className="w-4 h-4" />Add Lead
           </Button>
         </div>
       </div>
 
-      {/* Filters Row */}
+      {/* ── Filters Row ────────────────────────────────────────────────────── */}
       <AnimatePresence>
         {showFilters && (
-          <motion.div
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: 'auto', opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            className="overflow-hidden mb-4"
-          >
+          <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="overflow-hidden mb-4">
             <div className="flex flex-wrap gap-2 p-3 bg-card border border-border rounded-xl">
               <Select value={filterSource} onValueChange={setFilterSource}>
                 <SelectTrigger className="w-40 h-8 text-xs"><SelectValue placeholder="All Sources" /></SelectTrigger>
@@ -702,9 +835,7 @@ export default function SalesPipeline() {
                 </SelectContent>
               </Select>
               {hasFilters && (
-                <Button size="sm" variant="ghost" className="h-8 text-xs" onClick={() => {
-                  setFilterSource(''); setFilterPriority(''); setFilterAssigned('')
-                }}>
+                <Button size="sm" variant="ghost" className="h-8 text-xs" onClick={() => { setFilterSource(''); setFilterPriority(''); setFilterAssigned('') }}>
                   <X className="w-3.5 h-3.5 mr-1" />Clear
                 </Button>
               )}
@@ -713,112 +844,123 @@ export default function SalesPipeline() {
         )}
       </AnimatePresence>
 
-      {/* Analytics KPI Bar */}
-      <AnalyticsBar analytics={analyticsData} forecast={forecastData} />
+      {/* ── KPI Bar ────────────────────────────────────────────────────────── */}
+      {activePipeline && <KpiBar leads={leadsData} pipelineName={activePipeline.name} />}
 
-      {/* Kanban Board */}
-      <div className="flex gap-3 overflow-x-auto pb-4 flex-1" style={{ minHeight: 0 }}>
-        {STAGES.map(stage => {
-          const colData = kanbanData?.[stage.key] || {}
-          const leads = colData.leads || []
-          const totalValue = colData.totalValue || 0
-          const isDropTarget = dragOver === stage.key
-          return (
-            <div
-              key={stage.key}
-              className={`flex flex-col rounded-xl border transition-colors shrink-0 w-[268px] ${
-                isDropTarget ? 'border-primary bg-primary/5' : 'border-border bg-card/50'
-              }`}
-              onDragOver={e => { e.preventDefault(); setDragOver(stage.key) }}
-              onDragLeave={() => setDragOver(null)}
-              onDrop={e => { e.preventDefault(); onDragEnd() }}
-            >
-              {/* Column header */}
-              <div className="px-3 py-2.5 border-b border-border rounded-t-xl">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <div className={`w-2.5 h-2.5 rounded-full ${stage.color}`} />
-                    <span className="text-sm font-semibold">{stage.label}</span>
+      {/* ── No pipeline state ───────────────────────────────────────────────── */}
+      {!loadingPipelines && pipelines.length === 0 && (
+        <NoPipelineState loading={false} />
+      )}
+
+      {/* ── Kanban Board ───────────────────────────────────────────────────── */}
+      {activePipeline && (
+        <div className="flex gap-3 overflow-x-auto pb-4 flex-1" style={{ minHeight: 0 }}>
+          {stages.map(stage => {
+            const stageKey = String(stage._id)
+            const colData  = kanbanData[stageKey] || { leads: [], count: 0, totalValue: 0 }
+            const isDropTarget = dragOver === stageKey
+
+            return (
+              <div
+                key={stageKey}
+                className={`flex flex-col rounded-xl border transition-colors shrink-0 w-[268px] ${
+                  isDropTarget ? 'border-primary bg-primary/5' : 'border-border bg-card/50'
+                }`}
+                onDragOver={e => { e.preventDefault(); setDragOver(stageKey) }}
+                onDragLeave={() => setDragOver(null)}
+                onDrop={e => { e.preventDefault(); onDragEnd() }}
+              >
+                {/* Column header */}
+                <div className="px-3 py-2.5 border-b border-border rounded-t-xl">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <div
+                        className="w-2.5 h-2.5 rounded-full shrink-0"
+                        style={{ background: stage.color || '#6366f1' }}
+                      />
+                      <span className="text-sm font-semibold">{stage.name}</span>
+                      {stage.type === 'won'  && <span className="text-[10px]">✅</span>}
+                      {stage.type === 'lost' && <span className="text-[10px]">❌</span>}
+                    </div>
+                    <span className="text-xs bg-muted rounded-full px-2 py-0.5 font-medium">{colData.count}</span>
                   </div>
-                  <span className="text-xs bg-muted rounded-full px-2 py-0.5 font-medium">{leads.length}</span>
-                </div>
-                <div className="flex items-center justify-between mt-0.5 pl-4">
-                  {totalValue > 0 ? (
-                    <p className="text-[11px] text-muted-foreground">{fmt(totalValue)}</p>
-                  ) : <span />}
-                  {stage.probability > 0 && stage.probability < 100 && (
-                    <span className="text-[10px] text-muted-foreground">{stage.probability}% likely</span>
+                  {colData.totalValue > 0 && (
+                    <p className="text-[11px] text-muted-foreground mt-0.5 pl-4">{fmt(colData.totalValue)}</p>
                   )}
                 </div>
-              </div>
 
-              {/* Cards */}
-              <div className="flex-1 overflow-y-auto p-2 space-y-2">
-                {isLoading && (
-                  <div className="space-y-2">
-                    {[0, 1, 2].map(i => <div key={i} className="h-24 rounded-lg bg-muted animate-pulse" />)}
-                  </div>
-                )}
-                <AnimatePresence>
-                  {leads.map(lead => (
-                    <KanbanCard
-                      key={lead._id}
-                      lead={lead}
-                      stageKey={stage.key}
-                      selected={selectedIds.includes(lead._id)}
-                      onSelect={toggleSelect}
-                      onView={l => setDetailLead(l)}
-                      onEdit={openEdit}
-                      onDelete={id => { if (confirm('Delete this lead?')) deleteMutation.mutate(id) }}
-                      onMoveToLost={handleMoveToLost}
-                      onMoveToWon={handleMoveToWon}
-                      onAddNote={l => setNoteDialog(l)}
-                      onFollowUp={l => setFollowUpLead(l)}
-                      onArchive={l => archiveMutation.mutate(l._id)}
-                      onConvert={l => setConvertConfirm(l)}
-                      dragging={dragging}
-                      onDragStart={onDragStart}
-                    />
-                  ))}
-                </AnimatePresence>
-                {!isLoading && leads.length === 0 && (
-                  <div className="text-center py-8 text-muted-foreground text-xs">Drop leads here</div>
-                )}
-                <button
-                  onClick={() => openAdd(stage.key)}
-                  className="w-full py-2 text-xs text-muted-foreground hover:text-foreground hover:bg-accent rounded-lg transition-colors flex items-center justify-center gap-1"
-                >
-                  <Plus className="w-3.5 h-3.5" /> Add
-                </button>
+                {/* Cards */}
+                <div className="flex-1 overflow-y-auto p-2 space-y-2">
+                  {isLoading && (
+                    <div className="space-y-2">
+                      {[0, 1, 2].map(i => <div key={i} className="h-24 rounded-lg bg-muted animate-pulse" />)}
+                    </div>
+                  )}
+                  <AnimatePresence>
+                    {colData.leads.map(lead => (
+                      <KanbanCard
+                        key={lead._id}
+                        lead={lead}
+                        stageType={stage.type}
+                        stage={stage}
+                        selected={selectedIds.includes(lead._id)}
+                        onSelect={toggleSelect}
+                        onView={l => setDetailLead(l)}
+                        onEdit={openEdit}
+                        onDelete={id => { if (confirm('Delete this lead?')) deleteMutation.mutate(id) }}
+                        onMoveToLost={handleMoveToLost}
+                        onMoveToWon={handleMoveToWon}
+                        onAddNote={l => setNoteDialog(l)}
+                        onFollowUp={l => setFollowUpLead(l)}
+                        onArchive={l => archiveMutation.mutate(l._id)}
+                        onConvert={l => setConvertConfirm(l)}
+                        dragging={dragging}
+                        onDragStart={onDragStart}
+                      />
+                    ))}
+                  </AnimatePresence>
+                  {!isLoading && colData.leads.length === 0 && (
+                    <div className="text-center py-8 text-muted-foreground text-xs">Drop leads here</div>
+                  )}
+                  <button
+                    onClick={() => openAdd(stage)}
+                    className="w-full py-2 text-xs text-muted-foreground hover:text-foreground hover:bg-accent rounded-lg transition-colors flex items-center justify-center gap-1"
+                  >
+                    <Plus className="w-3.5 h-3.5" /> Add
+                  </button>
+                </div>
               </div>
-            </div>
-          )
-        })}
-      </div>
+            )
+          })}
+        </div>
+      )}
 
-      {/* Bulk Action Bar */}
+      {/* ── Bulk Bar ────────────────────────────────────────────────────────── */}
       <AnimatePresence>
         {selectedIds.length > 0 && (
           <BulkBar
             selectedIds={selectedIds}
             onClear={() => setSelectedIds([])}
-            onBulk={(action, value) => bulkMutation.mutate({ action, value })}
+            stages={stages}
             employees={employees}
+            onBulkStage={handleBulkStage}
+            onBulkArchive={() => bulkMutation.mutate({ action: 'archive' })}
+            onBulkDelete={() => bulkMutation.mutate({ action: 'delete' })}
           />
         )}
       </AnimatePresence>
 
-      {/* Lead Detail Modal */}
+      {/* ── Modals & Dialogs ────────────────────────────────────────────────── */}
+
       {detailLead && (
         <LeadDetailModal
           open={!!detailLead}
           onClose={() => setDetailLead(null)}
           leadId={detailLead._id}
-          onUpdated={() => invalidate()}
+          onUpdated={invalidate}
         />
       )}
 
-      {/* Lost Reason Dialog */}
       <LostReasonDialog
         open={!!lostDialog}
         onClose={() => setLostDialog(null)}
@@ -827,7 +969,6 @@ export default function SalesPipeline() {
         loading={moveMutation.isPending}
       />
 
-      {/* Won Dialog */}
       <WonDialog
         open={!!wonDialog && !convertMutation.isPending}
         onClose={() => setWonDialog(null)}
@@ -837,7 +978,6 @@ export default function SalesPipeline() {
         loading={convertMutation.isPending}
       />
 
-      {/* Quick Note Dialog */}
       {noteDialog && (
         <QuickNoteDialog
           open={!!noteDialog}
@@ -847,7 +987,6 @@ export default function SalesPipeline() {
         />
       )}
 
-      {/* Follow-up Modal */}
       {followUpLead && (
         <FollowUpModal
           open={!!followUpLead}
@@ -857,12 +996,9 @@ export default function SalesPipeline() {
         />
       )}
 
-      {/* Convert to Client Confirm */}
       <Dialog open={!!convertConfirm} onOpenChange={() => setConvertConfirm(null)}>
         <DialogContent className="max-w-sm" aria-describedby={undefined}>
-          <DialogHeader>
-            <DialogTitle>Convert to Client?</DialogTitle>
-          </DialogHeader>
+          <DialogHeader><DialogTitle>Convert to Client?</DialogTitle></DialogHeader>
           <p className="text-sm text-muted-foreground">
             This will create a new Client profile for <strong>{convertConfirm?.name}</strong>
             {convertConfirm?.company ? ` (${convertConfirm.company})` : ''}. This cannot be undone.
@@ -880,11 +1016,13 @@ export default function SalesPipeline() {
         </DialogContent>
       </Dialog>
 
-      {/* Create/Edit Lead Modal */}
-      <Dialog open={showModal} onOpenChange={v => { setShowModal(v); if (!v) { setEditLead(null); reset() } }}>
+      {/* ── Create / Edit Lead Modal ─────────────────────────────────────────── */}
+      <Dialog open={showModal} onOpenChange={v => { setShowModal(v); if (!v) { setEditLead(null); setAddToStage(null); reset() } }}>
         <DialogContent className="max-w-lg" aria-describedby={undefined}>
           <DialogHeader>
-            <DialogTitle>{editLead ? 'Edit Lead' : 'Add Lead to Pipeline'}</DialogTitle>
+            <DialogTitle>
+              {editLead ? 'Edit Lead' : `Add Lead${addToStage ? ` → ${addToStage.name}` : ''}`}
+            </DialogTitle>
           </DialogHeader>
           <form onSubmit={handleSubmit(d => mutation.mutate(d))} className="space-y-4">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -897,25 +1035,12 @@ export default function SalesPipeline() {
                 <Input {...register('company')} placeholder="Company name" />
               </div>
               <div className="space-y-1.5">
-                <Label>Brand Name</Label>
-                <Input {...register('brandName')} placeholder="Brand name" />
-              </div>
-              <div className="space-y-1.5">
-                <Label>Email</Label>
-                <Input {...register('email')} type="email" placeholder="email@example.com" />
-              </div>
-              <div className="space-y-1.5">
                 <Label>Phone</Label>
                 <Input {...register('phone')} placeholder="+91 98765 43210" />
               </div>
               <div className="space-y-1.5">
-                <Label>Stage</Label>
-                <Select onValueChange={v => setValue('status', v)} defaultValue={editLead?.status || watch('status') || 'new_lead'}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    {STAGES.map(s => <SelectItem key={s.key} value={s.key}>{s.label}</SelectItem>)}
-                  </SelectContent>
-                </Select>
+                <Label>Email</Label>
+                <Input {...register('email')} type="email" placeholder="email@example.com" />
               </div>
               <div className="space-y-1.5">
                 <Label>Priority</Label>
@@ -943,14 +1068,6 @@ export default function SalesPipeline() {
                 <Label>Expected Close Date</Label>
                 <Input {...register('expectedCloseDate')} type="date" />
               </div>
-              <div className="space-y-1.5">
-                <Label>Website</Label>
-                <Input {...register('website')} placeholder="https://" />
-              </div>
-              <div className="space-y-1.5">
-                <Label>Industry</Label>
-                <Input {...register('industry')} placeholder="e.g. E-commerce" />
-              </div>
               <div className="space-y-1.5 sm:col-span-2">
                 <Label>Assign To</Label>
                 <Select onValueChange={v => setValue('assignedTo', v)} defaultValue={editLead?.assignedTo?.[0]?._id || editLead?.assignedTo?.[0]}>
@@ -963,13 +1080,14 @@ export default function SalesPipeline() {
             </div>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setShowModal(false)}>Cancel</Button>
-              <Button type="submit" disabled={isSubmitting}>
+              <Button type="submit" disabled={isSubmitting || mutation.isPending}>
                 {editLead ? 'Update Lead' : 'Add to Pipeline'}
               </Button>
             </DialogFooter>
           </form>
         </DialogContent>
       </Dialog>
+
     </div>
   )
 }
