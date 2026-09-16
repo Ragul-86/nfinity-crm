@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import { useForm } from 'react-hook-form'
-import { User, Lock, Bell, Palette, Building2, Shield, Save, Loader2, Sparkles } from 'lucide-react'
+import { User, Lock, Bell, Palette, Building2, Shield, Save, Loader2, Sparkles, GitBranch } from 'lucide-react'
 import AISettings from '@/pages/settings/AISettings'
+import PipelineSettings from '@/pages/settings/PipelineSettings'
 import { motion } from 'framer-motion'
 import PageHeader from '@/components/common/PageHeader'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
@@ -55,6 +56,9 @@ export default function Settings() {
           )}
           {['platform_super_admin', 'client_super_admin', 'super_admin', 'admin'].includes(user?.role) && (
             <TabsTrigger value="ai" className="gap-2"><Sparkles className="w-4 h-4" />AI Copilot</TabsTrigger>
+          )}
+          {['client_super_admin', 'super_admin', 'admin'].includes(user?.role) && (
+            <TabsTrigger value="pipelines" className="gap-2"><GitBranch className="w-4 h-4" />Pipelines</TabsTrigger>
           )}
         </TabsList>
 
@@ -200,6 +204,11 @@ export default function Settings() {
         {/* AI Copilot */}
         <TabsContent value="ai">
           <AISettings />
+        </TabsContent>
+
+        {/* Pipelines */}
+        <TabsContent value="pipelines">
+          <PipelineSettings />
         </TabsContent>
 
         {/* Company */}

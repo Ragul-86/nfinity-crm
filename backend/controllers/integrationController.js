@@ -160,14 +160,14 @@ exports.getIntegration = async (req, res, next) => {
 //     against the x-spreadsheet-id header on incoming webhook calls, binding
 //     the secret to a specific spreadsheet.
 //
-// Body (all optional): { spreadsheetId, selectedTabs: string[] }
+// Body (all optional): { spreadsheetId, selectedTabs: string[], industry: string }
 // ─────────────────────────────────────────────────────────────────────────────
 exports.setupGoogleSheet = async (req, res, next) => {
   try {
     const tenantId = injectTenantId(req);
     if (!tenantId) return next(err('No workspace context', 403));
 
-    const { spreadsheetId, selectedTabs } = req.body || {};
+    const { spreadsheetId, selectedTabs, industry } = req.body || {};
 
     // Generate a cryptographically random 32-byte hex webhook secret
     const plaintextSecret = crypto.randomBytes(32).toString('hex');
@@ -215,6 +215,17 @@ exports.setupGoogleSheet = async (req, res, next) => {
       SHEETS_TO_SYNC: (configUpdate.selectedTabs || existing?.config?.selectedTabs || []).join(','),
     };
 
+    // ── Auto-create default pipelines if industry is provided and no pipelines exist yet ──
+    let pipelinesCreated = [];
+    if (isNew && industry) {
+      try {
+        const { createDefaultPipelinesForTenant } = require('../utils/industryTemplates');
+        pipelinesCreated = await createDefaultPipelinesForTenant(tenantId, industry, req.user._id);
+      } catch (pipelineErr) {
+        console.error('setupGoogleSheet: pipeline creation failed (non-fatal):', pipelineErr.message);
+      }
+    }
+
     await logAction({
       action:       isNew ? 'integration_connected' : 'integration_updated',
       module:       'integrations',
@@ -222,7 +233,7 @@ exports.setupGoogleSheet = async (req, res, next) => {
       tenantId,
       resourceId:   'google_sheet',
       resourceType: 'integration',
-      details:      { provider: 'google_sheet', regenerated: !isNew, spreadsheetId },
+      details:      { provider: 'google_sheet', regenerated: !isNew, spreadsheetId, industry, pipelinesCreated: pipelinesCreated.length },
       req,
     });
 

@@ -34,6 +34,8 @@ const ClientFile = require('./models/ClientFile');
 const Payment    = require('./models/Payment');
 const CreditNote = require('./models/CreditNote');
 const DebitNote  = require('./models/DebitNote');
+const Pipeline        = require('./models/Pipeline');
+const PipelineMapping = require('./models/PipelineMapping');
 const { seedSOPTemplates } = require('./utils/sopTemplatesData');
 
 // Routes
@@ -68,6 +70,7 @@ const aiRoutes          = require('./routes/ai');
 const clientPortalRoutes = require('./routes/clientPortal');
 const systemHealthRoutes    = require('./routes/systemHealth');
 const gsheetWebhookRoutes   = require('./routes/gsheetWebhook');
+const pipelineDefRoutes     = require('./routes/pipelineDefs');
 
 const app = express();
 
@@ -259,6 +262,8 @@ app.use('/api/portal',      clientPortalRoutes);
 app.use('/api/health',         systemHealthRoutes);
 // Google Sheet → CRM lead sync (public, HMAC-secured)
 app.use('/api/gsheet-webhook', gsheetWebhookRoutes);
+// Flexible pipeline definitions (tenant-scoped, requires auth)
+app.use('/api/pipeline-defs', pipelineDefRoutes);
 
 // 404 handler
 app.use('*', (req, res) => res.status(404).json({ success: false, message: `Route ${req.originalUrl} not found` }));

@@ -16,7 +16,7 @@ import { toast } from 'react-hot-toast'
 import {
   Plus, Search, Download, Upload, MoreVertical, Trash2,
   Archive, X, ChevronLeft, ChevronRight, Eye, AlertCircle,
-  Calendar,
+  Calendar, GitBranch,
 } from 'lucide-react'
 import { cn } from '@/utils/cn'
 import { format } from 'date-fns'
@@ -308,7 +308,7 @@ export default function Leads() {
   const qc = useQueryClient()
   const [page, setPage] = useState(1)
   const [search, setSearch] = useState('')
-  const [filters, setFilters] = useState({ status: '', priority: '', source: '', adId: '' })
+  const [filters, setFilters] = useState({ status: '', priority: '', source: '', adId: '', pipelineId: '', stageId: '' })
   const [showCreate, setShowCreate] = useState(false)
   const [showImport, setShowImport] = useState(false)
   const [detailId, setDetailId] = useState(null)
@@ -319,11 +319,13 @@ export default function Leads() {
 
   const qp = new URLSearchParams({
     page, limit: LIMIT,
-    ...(search           && { search }),
-    ...(filters.status   && { status: filters.status }),
-    ...(filters.priority && { priority: filters.priority }),
-    ...(filters.source   && { source: filters.source }),
-    ...(filters.adId     && { adId: filters.adId }),
+    ...(search               && { search }),
+    ...(filters.status       && { status: filters.status }),
+    ...(filters.priority     && { priority: filters.priority }),
+    ...(filters.source       && { source: filters.source }),
+    ...(filters.adId         && { adId: filters.adId }),
+    ...(filters.pipelineId   && { pipelineId: filters.pipelineId }),
+    ...(filters.stageId      && { stageId: filters.stageId }),
   }).toString()
 
   const { data: leadsData, isLoading } = useQuery({
@@ -345,6 +347,18 @@ export default function Leads() {
     staleTime: 5 * 60 * 1000,
   })
 
+  const { data: pipelinesData } = useQuery({
+    queryKey: ['pipelines-list'],
+    queryFn: () => apiFetch('/api/pipeline-defs').then(d => d.data || []),
+    staleTime: 5 * 60 * 1000,
+  })
+
+  // Stages from the currently selected pipeline
+  const selectedPipeline = pipelinesData?.find(p => p._id === filters.pipelineId)
+  const pipelineStages = selectedPipeline
+    ? [...(selectedPipeline.stages || [])].sort((a, b) => a.order - b.order)
+    : []
+
   const deleteMut = useMutation({
     mutationFn: (id) => apiFetch(`/api/leads/${id}`, { method: 'DELETE' }),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['leads'] }); toast.success('Lead deleted') },
@@ -365,9 +379,17 @@ export default function Leads() {
   const leads = leadsData?.data || []
   const total = leadsData?.total || 0
   const pages = Math.ceil(total / LIMIT)
-  const hasFilters = search || filters.status || filters.priority || filters.source || filters.adId
-  const filterChange = (k, v) => { setFilters(f => ({ ...f, [k]: v })); setPage(1) }
-  const clearFilters = () => { setFilters({ status: '', priority: '', source: '', adId: '' }); setSearch(''); setPage(1) }
+  const hasFilters = search || filters.status || filters.priority || filters.source || filters.adId || filters.pipelineId || filters.stageId
+  const filterChange = (k, v) => {
+    setFilters(f => {
+      const next = { ...f, [k]: v }
+      // When pipeline changes, clear stageId
+      if (k === 'pipelineId') next.stageId = ''
+      return next
+    })
+    setPage(1)
+  }
+  const clearFilters = () => { setFilters({ status: '', priority: '', source: '', adId: '', pipelineId: '', stageId: '' }); setSearch(''); setPage(1) }
 
   return (
     <div className="p-4 sm:p-6 space-y-5">
@@ -450,6 +472,38 @@ export default function Leads() {
               {adsData.map(ad => (
                 <SelectItem key={ad._id} value={ad._id}>
                   {ad.adName || ad._id} <span className="text-muted-foreground ml-1">({ad.count})</span>
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
+        {pipelinesData && pipelinesData.length > 0 && (
+          <Select value={filters.pipelineId || 'all'} onValueChange={v => filterChange('pipelineId', v === 'all' ? '' : v)}>
+            <SelectTrigger className="w-44 h-9">
+              <GitBranch className="w-3.5 h-3.5 mr-1.5 text-muted-foreground" />
+              <SelectValue placeholder="Pipeline" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Pipelines</SelectItem>
+              {pipelinesData.map(p => (
+                <SelectItem key={p._id} value={p._id}>
+                  {p.name}{p.isDefault ? ' ★' : ''}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
+        {filters.pipelineId && pipelineStages.length > 0 && (
+          <Select value={filters.stageId || 'all'} onValueChange={v => filterChange('stageId', v === 'all' ? '' : v)}>
+            <SelectTrigger className="w-40 h-9"><SelectValue placeholder="Stage" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Stages</SelectItem>
+              {pipelineStages.map(s => (
+                <SelectItem key={s._id} value={s._id}>
+                  <span className="flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full inline-block" style={{ backgroundColor: s.color || '#6366f1' }} />
+                    {s.name}
+                  </span>
                 </SelectItem>
               ))}
             </SelectContent>

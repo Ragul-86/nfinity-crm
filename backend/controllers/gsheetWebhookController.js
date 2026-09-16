@@ -15,10 +15,12 @@
  * Isolation:  Each workspace uses its own Integration record with its own encrypted secret.
  */
 
-const crypto      = require('crypto');
-const Lead        = require('../models/Lead');
-const Integration = require('../models/Integration');
-const { decrypt } = require('../utils/encryption');
+const crypto          = require('crypto');
+const Lead            = require('../models/Lead');
+const Integration     = require('../models/Integration');
+const Pipeline        = require('../models/Pipeline');
+const PipelineMapping = require('../models/PipelineMapping');
+const { decrypt }     = require('../utils/encryption');
 
 // ── HMAC verification ──────────────────────────────────────────────────────────
 function verifyHmac(secret, rawBody, signature) {
@@ -85,6 +87,72 @@ function extractAttribution(customFields, rowSheetName) {
     metaFormName:str(customFields.form_name),
     sheetName:   str(rowSheetName),
   };
+}
+
+// ── Resolve pipeline for an incoming lead ──────────────────────────────────────
+// Checks PipelineMapping in priority order: adId → metaFormId → sheetName → source
+// Falls back to workspace default pipeline.
+// Returns { pipelineId, stageId, stageName, stageType } or all nulls.
+async function resolvePipeline(workspaceId, { adId, metaFormId, sheetName, source }) {
+  try {
+    // 1. Look for an explicit mapping
+    const matchQuery = {
+      tenantId: workspaceId,
+      isActive: true,
+      $or: [],
+    };
+    if (adId)       matchQuery.$or.push({ adId });
+    if (metaFormId) matchQuery.$or.push({ metaFormId });
+    if (sheetName)  matchQuery.$or.push({ sheetName });
+    if (source)     matchQuery.$or.push({ source });
+
+    let pipeline = null;
+    let stageOverride = null;
+
+    if (matchQuery.$or.length > 0) {
+      const mapping = await PipelineMapping.findOne(matchQuery)
+        .populate('pipelineId')
+        .lean();
+
+      if (mapping && mapping.pipelineId && mapping.pipelineId.isActive) {
+        pipeline      = mapping.pipelineId;
+        stageOverride = mapping.stageId ? String(mapping.stageId) : null;
+      }
+    }
+
+    // 2. Fall back to workspace default pipeline
+    if (!pipeline) {
+      pipeline = await Pipeline.findOne({ tenantId: workspaceId, isDefault: true, isActive: true }).lean();
+    }
+
+    // 3. If still no pipeline, take any active pipeline
+    if (!pipeline) {
+      pipeline = await Pipeline.findOne({ tenantId: workspaceId, isActive: true }).sort({ createdAt: 1 }).lean();
+    }
+
+    if (!pipeline) return { pipelineId: null, stageId: null, stageName: null, stageType: 'open' };
+
+    // Determine the starting stage
+    const sortedStages = [...(pipeline.stages || [])].sort((a, b) => a.order - b.order);
+    let stage = null;
+
+    if (stageOverride) {
+      stage = sortedStages.find(s => String(s._id) === stageOverride);
+    }
+    if (!stage) {
+      stage = sortedStages.find(s => s.type === 'open') || sortedStages[0];
+    }
+
+    return {
+      pipelineId: pipeline._id,
+      stageId:    stage?._id   || null,
+      stageName:  stage?.name  || null,
+      stageType:  stage?.type  || 'open',
+    };
+  } catch (e) {
+    console.error('GSheet webhook: pipeline resolution failed:', e.message);
+    return { pipelineId: null, stageId: null, stageName: null, stageType: 'open' };
+  }
 }
 
 // ── Main handler ───────────────────────────────────────────────────────────────
@@ -209,6 +277,14 @@ exports.receiveLeads = async (req, res) => {
         // Keep campaign name in tags for backward-compat with existing tag-based filters
         const campaignTag = attribution.campaignName || '';
 
+        // Resolve pipeline assignment (non-blocking — lead still created without it)
+        const pipelineAssignment = await resolvePipeline(workspaceId, {
+          adId:       attribution.adId,
+          metaFormId: attribution.metaFormId,
+          sheetName:  attribution.sheetName,
+          source:     normaliseSource(row.source),
+        });
+
         await Lead.create({
           externalLeadId,
           externalSource: 'google_sheet',
@@ -222,6 +298,8 @@ exports.receiveLeads = async (req, res) => {
           customFields,
           // Top-level attribution for indexing and filtering
           ...attribution,
+          // Pipeline assignment (null-safe — existing leads without pipelines still work)
+          ...pipelineAssignment,
         });
 
         results.created++;

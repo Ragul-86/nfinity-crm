@@ -253,13 +253,36 @@ exports.createTenant = async (req, res, next) => {
       } catch (e) { console.error('Setup email failed:', e.message); }
     }
 
-    logAction({ action: 'WORKSPACE_CREATED', module: 'platform', performedBy: req.user._id, resourceId: tenant._id, resourceType: 'Tenant', details: { name, plan }, req }).catch(() => {});
+    // ── Auto-create default pipelines from industry template ─────────────────
+    let pipelinesCreated = [];
+    if (industry) {
+      try {
+        const { createDefaultPipelinesForTenant } = require('../utils/industryTemplates');
+        // Normalize the industry key (handle free-text entries from old forms)
+        const industryKey = String(industry).toLowerCase().replace(/[\s\/]+/g, '_').replace(/[^a-z0-9_]/g, '');
+        pipelinesCreated = await createDefaultPipelinesForTenant(tenant._id, industryKey, superAdmin._id);
+      } catch (pipelineErr) {
+        console.error('Workspace creation: pipeline setup failed (non-fatal):', pipelineErr.message);
+      }
+    }
+    // Fallback: if no industry or no pipelines created, create a general Sales Pipeline
+    if (pipelinesCreated.length === 0) {
+      try {
+        const { createDefaultPipelinesForTenant } = require('../utils/industryTemplates');
+        pipelinesCreated = await createDefaultPipelinesForTenant(tenant._id, 'general', superAdmin._id);
+      } catch (pipelineErr) {
+        console.error('Workspace creation: fallback pipeline setup failed (non-fatal):', pipelineErr.message);
+      }
+    }
+
+    logAction({ action: 'WORKSPACE_CREATED', module: 'platform', performedBy: req.user._id, resourceId: tenant._id, resourceType: 'Tenant', details: { name, plan, industry, pipelinesCreated: pipelinesCreated.length }, req }).catch(() => {});
 
     res.status(201).json({
       success: true,
       message: `Workspace "${name}" created successfully`,
       tenant: { _id: tenant._id, name: tenant.name, slug: tenant.slug, plan: tenant.plan, status: tenant.status },
       superAdmin: { _id: superAdmin._id, name: superAdmin.name, email: superAdmin.email },
+      pipelinesCreated: pipelinesCreated.map(p => ({ _id: p._id, name: p.name })),
     });
   } catch (err) { next(err); }
 };
