@@ -257,9 +257,39 @@ function KanbanCard({
     && isPast(new Date(lead.expectedCloseDate))
     && stageType === 'open'
 
-  const handleCall      = e => { e.stopPropagation(); if (lead.phone) window.open(`tel:${lead.phone}`); else toast.error('No phone number') }
-  const handleWhatsApp  = e => { e.stopPropagation(); const p = lead.phone?.replace(/\D/g, ''); if (p) window.open(`https://wa.me/${p}`, '_blank'); else toast.error('No phone number') }
-  const handleEmail     = e => { e.stopPropagation(); if (lead.email) window.open(`mailto:${lead.email}`); else toast.error('No email') }
+  // ── Contact action helpers ───────────────────────────────────────────────────
+  // tel: and mailto: must be dispatched via window.location.href (not window.open).
+  // window.open() is for HTTP/HTTPS URLs only — browsers silently block or mishandle
+  // protocol handlers routed through the popup API.
+  //
+  // Phone normalization for tel:
+  //   Strips spaces, dashes, dots, parentheses but preserves the leading + so that
+  //   international numbers (+91 98754 37804 → +9198754 37804) stay in E.164 format.
+  //   DO NOT strip all non-digits — that would remove the country-code + prefix.
+  //
+  // WhatsApp normalization (existing behaviour, unchanged):
+  //   wa.me accepts digits only (no + needed), so /\D/g stripping is correct there.
+  const normPhone = phone => phone.replace(/[\s\-().]/g, '')   // keep +, strip formatting
+
+  const handleCall = e => {
+    e.stopPropagation()
+    if (!lead.phone?.trim()) { toast.error('No phone number available'); return }
+    window.location.href = `tel:${normPhone(lead.phone)}`
+  }
+
+  const handleWhatsApp = e => {
+    // WhatsApp — existing working behaviour, unchanged
+    e.stopPropagation()
+    const p = lead.phone?.replace(/\D/g, '')
+    if (p) window.open(`https://wa.me/${p}`, '_blank')
+    else toast.error('No phone number')
+  }
+
+  const handleEmail = e => {
+    e.stopPropagation()
+    if (!lead.email?.trim()) { toast.error('No email address available'); return }
+    window.location.href = `mailto:${lead.email}`
+  }
 
   return (
     <motion.div
