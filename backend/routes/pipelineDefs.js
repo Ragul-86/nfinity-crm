@@ -23,6 +23,9 @@ router.get('/industry-templates',            ctrl.listIndustryTemplates);
 // ── Ad → Pipeline mappings ───────────────────────────────────────────────────
 // IMPORTANT: /mappings routes must come BEFORE /:id to avoid Express matching
 // "mappings" as an :id parameter.
+// Known ads/forms — MUST be before /mappings/:mid to avoid ":mid = known-ads" match
+router.get('/mappings/known-ads',            ctrl.getKnownAds);
+router.get('/mappings/known-forms',          ctrl.getKnownForms);
 router.get('/mappings',                      ctrl.listMappings);
 router.post('/mappings',                     authorize(...ADMIN_ROLES), ctrl.createMapping);
 router.put('/mappings/:mid',                 authorize(...ADMIN_ROLES), ctrl.updateMapping);

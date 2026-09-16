@@ -417,6 +417,78 @@ exports.deleteMapping = async (req, res, next) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// KNOWN ADS & FORMS  (discovered from existing lead attribution data)
+// Returns unique adId / metaFormId values already seen in this tenant's leads.
+// Admin uses these to build mappings without needing to type raw IDs manually.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// GET /api/pipeline-defs/mappings/known-ads
+exports.getKnownAds = async (req, res, next) => {
+  try {
+    const tf = getTenantFilter(req);
+    if (!tf.tenantId) return next(err('No workspace context', 403));
+
+    const ads = await Lead.aggregate([
+      { $match: { ...tf, adId: { $exists: true, $ne: null, $nin: [null, ''] } } },
+      {
+        $group: {
+          _id:     '$adId',
+          adName:  { $last: '$adName' },
+          count:   { $sum: 1 },
+          latestAt:{ $max: '$createdAt' },
+        },
+      },
+      { $sort: { count: -1 } },
+      { $limit: 500 },
+      {
+        $project: {
+          _id:      0,
+          adId:     '$_id',
+          adName:   { $ifNull: ['$adName', ''] },
+          count:    1,
+          latestAt: 1,
+        },
+      },
+    ]);
+
+    res.json({ success: true, data: ads });
+  } catch (e) { next(e); }
+};
+
+// GET /api/pipeline-defs/mappings/known-forms
+exports.getKnownForms = async (req, res, next) => {
+  try {
+    const tf = getTenantFilter(req);
+    if (!tf.tenantId) return next(err('No workspace context', 403));
+
+    const forms = await Lead.aggregate([
+      { $match: { ...tf, metaFormId: { $exists: true, $ne: null, $nin: [null, ''] } } },
+      {
+        $group: {
+          _id:          '$metaFormId',
+          metaFormName: { $last: '$metaFormName' },
+          count:        { $sum: 1 },
+          latestAt:     { $max: '$createdAt' },
+        },
+      },
+      { $sort: { count: -1 } },
+      { $limit: 500 },
+      {
+        $project: {
+          _id:          0,
+          metaFormId:   '$_id',
+          metaFormName: { $ifNull: ['$metaFormName', ''] },
+          count:        1,
+          latestAt:     1,
+        },
+      },
+    ]);
+
+    res.json({ success: true, data: forms });
+  } catch (e) { next(e); }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 // INDUSTRY TEMPLATES
 // ─────────────────────────────────────────────────────────────────────────────
 

@@ -502,135 +502,437 @@ function DeletePipelineDialog({ pipeline, pipelines, open, onClose }) {
 }
 
 // ── Ad → Pipeline mapping tab ─────────────────────────────────────────────────
+// Priority order (enforced server-side): adId > metaFormId > sheetName > source
+// New ads/forms discovered automatically from lead attribution data in the tenant.
 function MappingsTab({ pipelines }) {
   const qc = useQueryClient()
+  const EMPTY_FORM = { pipelineId: '', stageId: '', adId: '', adName: '', metaFormId: '', sheetName: '', source: '', label: '', criterionType: 'adId' }
   const [showCreate, setShowCreate] = useState(false)
-  const [form, setForm] = useState({ pipelineId: '', adId: '', adName: '', metaFormId: '', sheetName: '', source: '', label: '' })
+  const [editTarget, setEditTarget] = useState(null)   // mapping object to edit
+  const [form, setForm] = useState(EMPTY_FORM)
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
 
+  // Derived stages from selected pipeline in the form
+  const formPipeline = pipelines.find(p => p._id === form.pipelineId)
+  const formStages   = formPipeline
+    ? [...(formPipeline.stages || [])].sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+    : []
+
+  // Load all existing mappings
   const { data: mappingData, isLoading } = useQuery({
     queryKey: ['pipeline-mappings'],
     queryFn: () => api.get('/pipeline-defs/mappings').then(r => r.data.data || []),
   })
   const mappings = mappingData || []
 
+  // Load known ads (discovered from existing leads' adId field)
+  const { data: knownAdsData } = useQuery({
+    queryKey: ['known-ads'],
+    queryFn: () => api.get('/pipeline-defs/mappings/known-ads').then(r => r.data.data || []),
+    staleTime: 5 * 60 * 1000,
+  })
+  const knownAds = knownAdsData || []
+
+  // Load known forms
+  const { data: knownFormsData } = useQuery({
+    queryKey: ['known-forms'],
+    queryFn: () => api.get('/pipeline-defs/mappings/known-forms').then(r => r.data.data || []),
+    staleTime: 5 * 60 * 1000,
+  })
+  const knownForms = knownFormsData || []
+
   const createMut = useMutation({
-    mutationFn: (data) => api.post('/pipeline-defs/mappings', data).then(r => r.data),
+    mutationFn: d => api.post('/pipeline-defs/mappings', d).then(r => r.data),
     onSuccess: () => {
       toast.success('Mapping created')
       qc.invalidateQueries({ queryKey: ['pipeline-mappings'] })
       setShowCreate(false)
-      setForm({ pipelineId: '', adId: '', adName: '', metaFormId: '', sheetName: '', source: '', label: '' })
+      setForm(EMPTY_FORM)
     },
+    onError: e => toast.error(e.response?.data?.message || 'Failed to create mapping'),
+  })
+
+  const updateMut = useMutation({
+    mutationFn: ({ id, data }) => api.put(`/pipeline-defs/mappings/${id}`, data).then(r => r.data),
+    onSuccess: () => {
+      toast.success('Mapping updated')
+      qc.invalidateQueries({ queryKey: ['pipeline-mappings'] })
+      setEditTarget(null)
+    },
+    onError: e => toast.error(e.response?.data?.message || 'Failed to update'),
+  })
+
+  const toggleMut = useMutation({
+    mutationFn: ({ id, isActive }) => api.put(`/pipeline-defs/mappings/${id}`, { isActive }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['pipeline-mappings'] }),
     onError: e => toast.error(e.response?.data?.message || 'Failed'),
   })
 
   const deleteMut = useMutation({
-    mutationFn: (id) => api.delete(`/pipeline-defs/mappings/${id}`),
+    mutationFn: id => api.delete(`/pipeline-defs/mappings/${id}`),
     onSuccess: () => { toast.success('Mapping deleted'); qc.invalidateQueries({ queryKey: ['pipeline-mappings'] }) },
     onError: e => toast.error(e.response?.data?.message || 'Failed'),
   })
 
+  const validateForm = (f) => {
+    if (!f.pipelineId) { toast.error('Select a target pipeline'); return false }
+    const hasMatch = f.adId || f.metaFormId || f.sheetName || f.source
+    if (!hasMatch) { toast.error('Set at least one match criterion (Ad ID, Form ID, Sheet, or Source)'); return false }
+    return true
+  }
+
   const handleCreate = () => {
-    if (!form.pipelineId) return toast.error('Select a pipeline')
-    if (!form.adId && !form.metaFormId && !form.sheetName && !form.source) {
-      return toast.error('Set at least one match criterion (Ad ID, Form ID, Sheet Name, or Source)')
-    }
+    if (!validateForm(form)) return
     createMut.mutate(form)
+  }
+
+  const openEdit = m => {
+    setEditTarget(m)
+    setForm({
+      pipelineId:    String(m.pipelineId?._id || m.pipelineId || ''),
+      stageId:       m.stageId ? String(m.stageId) : '',
+      adId:          m.adId       || '',
+      adName:        m.adName     || '',
+      metaFormId:    m.metaFormId || '',
+      sheetName:     m.sheetName  || '',
+      source:        m.source     || '',
+      label:         m.label      || '',
+      criterionType: m.adId ? 'adId' : m.metaFormId ? 'metaFormId' : m.sheetName ? 'sheetName' : 'source',
+    })
+  }
+
+  const handleUpdate = () => {
+    if (!validateForm(form)) return
+    updateMut.mutate({ id: editTarget._id, data: form })
+  }
+
+  // Shared form UI (used for both Create and Edit)
+  const MappingForm = ({ onSubmit, isPending, submitLabel }) => (
+    <Card>
+      <CardContent className="pt-4 space-y-4">
+
+        {/* Match criterion type */}
+        <div>
+          <Label className="text-xs text-muted-foreground mb-1 block">
+            Match by * <span className="text-[10px] text-primary">(priority: Ad ID &gt; Form ID &gt; Sheet &gt; Source)</span>
+          </Label>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+            {[
+              { key: 'adId',       label: '🎯 Ad ID',   desc: 'Highest priority' },
+              { key: 'metaFormId', label: '📋 Form ID',  desc: 'Form-level' },
+              { key: 'sheetName',  label: '📊 Sheet',    desc: 'Google Sheet tab' },
+              { key: 'source',     label: '🌐 Source',   desc: 'Lead source type' },
+            ].map(ct => (
+              <button
+                key={ct.key}
+                type="button"
+                onClick={() => {
+                  set('criterionType', ct.key)
+                  // clear the others so only one criterion is active
+                  setForm(f => ({
+                    ...f,
+                    criterionType: ct.key,
+                    adId:          ct.key === 'adId'       ? f.adId       : '',
+                    adName:        ct.key === 'adId'       ? f.adName     : '',
+                    metaFormId:    ct.key === 'metaFormId' ? f.metaFormId : '',
+                    sheetName:     ct.key === 'sheetName'  ? f.sheetName  : '',
+                    source:        ct.key === 'source'     ? f.source     : '',
+                  }))
+                }}
+                className={cn(
+                  'text-left px-2.5 py-2 rounded-lg border text-xs transition-colors',
+                  form.criterionType === ct.key
+                    ? 'border-primary bg-primary/10 text-primary'
+                    : 'border-border hover:border-primary/50'
+                )}
+              >
+                <div className="font-medium">{ct.label}</div>
+                <div className="text-[10px] text-muted-foreground">{ct.desc}</div>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Criterion value */}
+        {form.criterionType === 'adId' && (
+          <div className="space-y-1.5">
+            <Label className="text-xs text-muted-foreground">Ad ID *</Label>
+            {knownAds.length > 0 ? (
+              <Select
+                value={form.adId || '__manual'}
+                onValueChange={v => {
+                  if (v === '__manual') { set('adId', ''); set('adName', ''); return }
+                  const ad = knownAds.find(a => a.adId === v)
+                  setForm(f => ({ ...f, adId: v, adName: ad?.adName || '' }))
+                }}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Select a known Ad ID…" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__manual">✏️ Enter manually…</SelectItem>
+                  {knownAds.map(a => (
+                    <SelectItem key={a.adId} value={a.adId}>
+                      <span className="font-mono text-xs">{a.adId}</span>
+                      {a.adName && <span className="ml-2 text-muted-foreground">{a.adName}</span>}
+                      <span className="ml-2 text-[10px] text-muted-foreground">({a.count} leads)</span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : (
+              <Input value={form.adId} onChange={e => set('adId', e.target.value)} placeholder="e.g. 120202080808..." />
+            )}
+            {(form.adId === '' || !knownAds.length) && (
+              <Input value={form.adId} onChange={e => set('adId', e.target.value)} placeholder="Paste Meta Ad ID…" className="mt-1.5" />
+            )}
+            <Input value={form.adName} onChange={e => set('adName', e.target.value)} placeholder="Ad name (for display only)" />
+          </div>
+        )}
+
+        {form.criterionType === 'metaFormId' && (
+          <div className="space-y-1.5">
+            <Label className="text-xs text-muted-foreground">Form ID *</Label>
+            {knownForms.length > 0 ? (
+              <Select
+                value={form.metaFormId || '__manual'}
+                onValueChange={v => {
+                  if (v === '__manual') { set('metaFormId', ''); return }
+                  const f = knownForms.find(x => x.metaFormId === v)
+                  setForm(ff => ({ ...ff, metaFormId: v, label: ff.label || f?.metaFormName || '' }))
+                }}
+              >
+                <SelectTrigger><SelectValue placeholder="Select a known Form ID…" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__manual">✏️ Enter manually…</SelectItem>
+                  {knownForms.map(f => (
+                    <SelectItem key={f.metaFormId} value={f.metaFormId}>
+                      <span className="font-mono text-xs">{f.metaFormId}</span>
+                      {f.metaFormName && <span className="ml-2 text-muted-foreground">{f.metaFormName}</span>}
+                      <span className="ml-2 text-[10px] text-muted-foreground">({f.count} leads)</span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : null}
+            {(form.metaFormId === '' || !knownForms.length) && (
+              <Input value={form.metaFormId} onChange={e => set('metaFormId', e.target.value)} placeholder="Paste Meta Form ID…" className="mt-1.5" />
+            )}
+          </div>
+        )}
+
+        {form.criterionType === 'sheetName' && (
+          <div className="space-y-1.5">
+            <Label className="text-xs text-muted-foreground">Sheet Tab Name *</Label>
+            <Input value={form.sheetName} onChange={e => set('sheetName', e.target.value)} placeholder="e.g. Hiring Leads, Jan 2026" />
+          </div>
+        )}
+
+        {form.criterionType === 'source' && (
+          <div className="space-y-1.5">
+            <Label className="text-xs text-muted-foreground">Lead Source *</Label>
+            <Input value={form.source} onChange={e => set('source', e.target.value)} placeholder="e.g. facebook_ads, meta_ads" />
+          </div>
+        )}
+
+        {/* Destination pipeline */}
+        <div className="space-y-1.5">
+          <Label className="text-xs text-muted-foreground">Target Pipeline *</Label>
+          <Select value={form.pipelineId} onValueChange={v => { set('pipelineId', v); set('stageId', '') }}>
+            <SelectTrigger><SelectValue placeholder="Select pipeline…" /></SelectTrigger>
+            <SelectContent>
+              {pipelines.map(p => (
+                <SelectItem key={p._id} value={p._id}>
+                  {p.name}{p.isDefault ? ' (default)' : ''}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+
+        {/* Initial stage — only shown when a pipeline is selected */}
+        {formStages.length > 0 && (
+          <div className="space-y-1.5">
+            <Label className="text-xs text-muted-foreground">Initial Stage (optional — defaults to first open stage)</Label>
+            <Select value={form.stageId || '__default'} onValueChange={v => set('stageId', v === '__default' ? '' : v)}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__default">First open stage (recommended)</SelectItem>
+                {formStages.map(s => (
+                  <SelectItem key={String(s._id)} value={String(s._id)}>
+                    <span className="flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full inline-block" style={{ background: s.color || '#6366f1' }} />
+                      {s.name}
+                      {s.type !== 'open' && (
+                        <span className={cn('text-[10px] ml-1', s.type === 'won' ? 'text-emerald-500' : 'text-red-500')}>
+                          ({s.type})
+                        </span>
+                      )}
+                    </span>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        )}
+
+        {/* Label */}
+        <div className="space-y-1.5">
+          <Label className="text-xs text-muted-foreground">Label (optional)</Label>
+          <Input value={form.label} onChange={e => set('label', e.target.value)} placeholder="e.g. Hiring Campaign → Recruitment Pipeline" />
+        </div>
+
+        <div className="flex gap-2">
+          <Button size="sm" disabled={isPending} onClick={onSubmit}>
+            {isPending ? 'Saving…' : submitLabel}
+          </Button>
+          <Button size="sm" variant="outline" onClick={() => { setShowCreate(false); setEditTarget(null); setForm(EMPTY_FORM) }}>
+            Cancel
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  )
+
+  // Helper: get the readable criterion display for a mapping row
+  const getCriterionBadges = m => {
+    const badges = []
+    if (m.adId)       badges.push({ label: `🎯 Ad: ${m.adId}`, sub: m.adName || '', priority: 1 })
+    if (m.metaFormId) badges.push({ label: `📋 Form: ${m.metaFormId}`, sub: '', priority: 2 })
+    if (m.sheetName)  badges.push({ label: `📊 ${m.sheetName}`, sub: '', priority: 3 })
+    if (m.source)     badges.push({ label: `🌐 ${m.source}`, sub: '', priority: 4 })
+    return badges
+  }
+
+  // Helper: find the stage name from a pipeline's stages
+  const getStageName = m => {
+    if (!m.stageId) return null
+    const pl = pipelines.find(p => String(p._id) === String(m.pipelineId?._id || m.pipelineId))
+    if (!pl) return null
+    const stage = (pl.stages || []).find(s => String(s._id) === String(m.stageId))
+    return stage?.name || null
   }
 
   return (
     <div className="space-y-4">
+      {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <p className="text-sm font-medium">Ad → Pipeline Mappings</p>
-          <p className="text-xs text-muted-foreground">Route incoming leads to specific pipelines based on their Meta Ad, Form, Sheet tab, or Source.</p>
+          <p className="text-sm font-medium">Ad & Form → Pipeline Routing</p>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Configure which pipeline incoming leads are routed to based on their Meta Ad, Form, Sheet tab, or Source.
+            Priority order: <span className="font-medium">Ad ID → Form ID → Sheet → Source → Workspace Default</span>.
+          </p>
         </div>
-        <Button size="sm" onClick={() => setShowCreate(s => !s)}>
-          <Plus className="w-3.5 h-3.5 mr-1" />{showCreate ? 'Cancel' : 'Add Mapping'}
-        </Button>
+        {!showCreate && !editTarget && (
+          <Button size="sm" onClick={() => { setShowCreate(true); setForm(EMPTY_FORM) }}>
+            <Plus className="w-3.5 h-3.5 mr-1" />Add Mapping
+          </Button>
+        )}
       </div>
+
+      {/* Known ads summary */}
+      {knownAds.length > 0 && !showCreate && !editTarget && (
+        <div className="rounded-lg border border-dashed border-border p-3 bg-muted/30">
+          <p className="text-xs text-muted-foreground">
+            <span className="font-medium text-foreground">{knownAds.length} unique Ad{knownAds.length !== 1 ? 's' : ''}</span> discovered from existing leads.
+            {knownAds.length > mappings.filter(m => m.adId).length
+              ? ` ${knownAds.length - mappings.filter(m => m.adId).length} not yet mapped — unmapped leads fall back to the workspace default pipeline.`
+              : ' All discovered ads have mappings.'}
+          </p>
+        </div>
+      )}
 
       {/* Create form */}
       {showCreate && (
-        <Card>
-          <CardContent className="pt-4 space-y-3">
-            <div>
-              <Label className="text-xs text-muted-foreground mb-1">Target Pipeline *</Label>
-              <Select value={form.pipelineId} onValueChange={v => set('pipelineId', v)}>
-                <SelectTrigger><SelectValue placeholder="Select pipeline" /></SelectTrigger>
-                <SelectContent>
-                  {pipelines.map(p => <SelectItem key={p._id} value={p._id}>{p.name}</SelectItem>)}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <Label className="text-xs text-muted-foreground mb-1">Meta Ad ID</Label>
-                <Input value={form.adId} onChange={e => set('adId', e.target.value)} placeholder="e.g. 120202..." />
-              </div>
-              <div>
-                <Label className="text-xs text-muted-foreground mb-1">Meta Form ID</Label>
-                <Input value={form.metaFormId} onChange={e => set('metaFormId', e.target.value)} placeholder="e.g. 987654..." />
-              </div>
-              <div>
-                <Label className="text-xs text-muted-foreground mb-1">Sheet Tab Name</Label>
-                <Input value={form.sheetName} onChange={e => set('sheetName', e.target.value)} placeholder="e.g. Digital Marketing Leads" />
-              </div>
-              <div>
-                <Label className="text-xs text-muted-foreground mb-1">Source</Label>
-                <Input value={form.source} onChange={e => set('source', e.target.value)} placeholder="e.g. facebook_ads" />
-              </div>
-            </div>
-            <div>
-              <Label className="text-xs text-muted-foreground mb-1">Label (optional)</Label>
-              <Input value={form.label} onChange={e => set('label', e.target.value)} placeholder="e.g. Hiring Ad → Recruitment Pipeline" />
-            </div>
-            <Button size="sm" disabled={createMut.isPending} onClick={handleCreate}>
-              {createMut.isPending ? 'Creating…' : 'Create Mapping'}
-            </Button>
-          </CardContent>
-        </Card>
+        <MappingForm onSubmit={handleCreate} isPending={createMut.isPending} submitLabel="Create Mapping" />
+      )}
+
+      {/* Edit form */}
+      {editTarget && (
+        <div>
+          <p className="text-sm font-medium mb-2">Edit Mapping</p>
+          <MappingForm onSubmit={handleUpdate} isPending={updateMut.isPending} submitLabel="Save Changes" />
+        </div>
       )}
 
       {/* Mappings list */}
       {isLoading ? (
         <p className="text-sm text-muted-foreground">Loading mappings…</p>
-      ) : mappings.length === 0 ? (
-        <div className="text-center py-8 text-muted-foreground">
+      ) : mappings.length === 0 && !showCreate ? (
+        <div className="text-center py-10 text-muted-foreground border border-dashed border-border rounded-xl">
           <GitBranch className="w-8 h-8 mx-auto mb-2 opacity-40" />
-          <p className="text-sm">No mappings yet.</p>
+          <p className="text-sm font-medium">No mappings yet</p>
           <p className="text-xs mt-1">Add a mapping to automatically route leads to the right pipeline.</p>
         </div>
       ) : (
         <div className="space-y-2">
-          {mappings.map(m => (
-            <Card key={m._id}>
-              <CardContent className="p-3 flex items-center justify-between gap-3">
-                <div className="flex-1 min-w-0">
-                  {m.label && <p className="text-sm font-medium truncate">{m.label}</p>}
-                  <div className="flex flex-wrap gap-2 mt-1">
-                    {m.adId      && <Badge variant="outline" className="text-[10px]">Ad: {m.adId}</Badge>}
-                    {m.metaFormId && <Badge variant="outline" className="text-[10px]">Form: {m.metaFormId}</Badge>}
-                    {m.sheetName && <Badge variant="outline" className="text-[10px]">Sheet: {m.sheetName}</Badge>}
-                    {m.source    && <Badge variant="outline" className="text-[10px]">Source: {m.source}</Badge>}
+          {mappings.map(m => {
+            const badges     = getCriterionBadges(m)
+            const stageName  = getStageName(m)
+            const pipelineName = m.pipelineId?.name || 'Unknown pipeline'
+            return (
+              <Card key={m._id} className={cn(!m.isActive && 'opacity-50')}>
+                <CardContent className="p-3">
+                  <div className="flex items-start gap-3">
+                    {/* Status dot */}
+                    <div className={cn('w-2 h-2 rounded-full mt-1.5 shrink-0', m.isActive ? 'bg-emerald-500' : 'bg-muted-foreground')} />
+
+                    {/* Content */}
+                    <div className="flex-1 min-w-0">
+                      {m.label && <p className="text-sm font-medium truncate mb-1">{m.label}</p>}
+                      <div className="flex flex-wrap gap-1.5 mb-1.5">
+                        {badges.map((b, i) => (
+                          <div key={i} className="flex flex-col">
+                            <Badge variant="outline" className="text-[10px] font-mono">{b.label}</Badge>
+                            {b.sub && <span className="text-[9px] text-muted-foreground px-1">{b.sub}</span>}
+                          </div>
+                        ))}
+                      </div>
+                      <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                        <ArrowRight className="w-3 h-3 shrink-0" />
+                        <span className="font-medium text-foreground">{pipelineName}</span>
+                        {stageName && <><span>→</span><span>{stageName}</span></>}
+                        {!stageName && <span className="text-[10px]">(first open stage)</span>}
+                      </div>
+                    </div>
+
+                    {/* Actions */}
+                    <div className="flex items-center gap-1 shrink-0">
+                      {/* Enable/Disable */}
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 px-2 text-xs"
+                        onClick={() => toggleMut.mutate({ id: m._id, isActive: !m.isActive })}
+                        title={m.isActive ? 'Disable' : 'Enable'}
+                      >
+                        {m.isActive ? '⏸' : '▶'}
+                      </Button>
+                      {/* Edit */}
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        className="h-7 w-7"
+                        onClick={() => openEdit(m)}
+                      >
+                        <Edit2 className="w-3.5 h-3.5" />
+                      </Button>
+                      {/* Delete */}
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        className="h-7 w-7 text-destructive hover:text-destructive"
+                        onClick={() => { if (window.confirm('Delete this mapping? Future leads from this Ad/Form will fall back to the default pipeline.')) deleteMut.mutate(m._id) }}
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </Button>
+                    </div>
                   </div>
-                  <p className="text-xs text-muted-foreground mt-1">
-                    <ArrowRight className="w-3 h-3 inline mr-0.5" />
-                    {m.pipelineId?.name || 'Unknown pipeline'}
-                  </p>
-                </div>
-                <Button
-                  size="icon"
-                  variant="ghost"
-                  className="h-7 w-7 text-destructive hover:text-destructive shrink-0"
-                  onClick={() => { if (window.confirm('Delete this mapping?')) deleteMut.mutate(m._id) }}
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                </Button>
-              </CardContent>
-            </Card>
-          ))}
+                </CardContent>
+              </Card>
+            )
+          })}
         </div>
       )}
     </div>

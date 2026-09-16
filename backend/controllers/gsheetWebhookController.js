@@ -90,33 +90,34 @@ function extractAttribution(customFields, rowSheetName) {
 }
 
 // ── Resolve pipeline for an incoming lead ──────────────────────────────────────
-// Checks PipelineMapping in priority order: adId → metaFormId → sheetName → source
-// Falls back to workspace default pipeline.
+// Checks PipelineMapping in strict priority order: adId → metaFormId → sheetName → source
+// Each tier is queried independently so a higher-priority match always wins.
+// Falls back to workspace default pipeline, then any active pipeline.
 // Returns { pipelineId, stageId, stageName, stageType } or all nulls.
 async function resolvePipeline(workspaceId, { adId, metaFormId, sheetName, source }) {
   try {
-    // 1. Look for an explicit mapping
-    const matchQuery = {
-      tenantId: workspaceId,
-      isActive: true,
-      $or: [],
-    };
-    if (adId)       matchQuery.$or.push({ adId });
-    if (metaFormId) matchQuery.$or.push({ metaFormId });
-    if (sheetName)  matchQuery.$or.push({ sheetName });
-    if (source)     matchQuery.$or.push({ source });
+    // Priority tiers — checked in order, stop at first hit
+    const tiers = [
+      adId       ? { adId }       : null,
+      metaFormId ? { metaFormId } : null,
+      sheetName  ? { sheetName }  : null,
+      source     ? { source }     : null,
+    ].filter(Boolean);
 
     let pipeline = null;
     let stageOverride = null;
 
-    if (matchQuery.$or.length > 0) {
-      const mapping = await PipelineMapping.findOne(matchQuery)
-        .populate('pipelineId')
-        .lean();
+    for (const criterion of tiers) {
+      const mapping = await PipelineMapping.findOne({
+        tenantId: workspaceId,
+        isActive: true,
+        ...criterion,
+      }).populate('pipelineId').lean();
 
       if (mapping && mapping.pipelineId && mapping.pipelineId.isActive) {
         pipeline      = mapping.pipelineId;
         stageOverride = mapping.stageId ? String(mapping.stageId) : null;
+        break;  // strict priority — stop at first hit
       }
     }
 
