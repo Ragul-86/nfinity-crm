@@ -21,8 +21,9 @@ const integrationSchema = new mongoose.Schema(
       enum: ['marketing', 'communication', 'google', 'payments', 'ai', 'developer'],
       required: true,
     },
-    // Provider identifier, e.g. 'meta_ads', 'whatsapp', 'google', 'razorpay',
-    // 'stripe', 'paypal', 'openai', 'claude', 'gemini', 'webhook'
+    // Provider identifier, e.g. 'meta_ads', 'whatsapp', 'google', 'google_sheets',
+    // 'google_sheet' (HMAC webhook), 'razorpay', 'stripe', 'paypal',
+    // 'openai', 'claude', 'gemini', 'webhook'
     provider: { type: String, required: true },
 
     name: { type: String, required: true },

@@ -20,7 +20,8 @@ const SENSITIVE_FIELDS = {
   claude:      ['apiKey'],
   gemini:      ['apiKey'],
   webhook:     ['webhookSecret', 'authToken'],
-  google_sheet: ['webhookSecret'],
+  google_sheet:  ['webhookSecret'],
+  google_sheets: ['accessToken', 'refreshToken'],
 };
 
 // ── Simple HTTPS GET (no external deps) ─────────────────────────────────────
@@ -428,6 +429,21 @@ exports.testConnection = async (req, res, next) => {
             : { passed: false, message: r.body?.error?.message || `HTTP ${r.status}` };
           break;
         }
+        case 'google_sheets': {
+          if (!creds.accessToken) throw new Error('Not connected — access token missing');
+          const r = await httpGet('https://www.googleapis.com/oauth2/v2/userinfo', {
+            Authorization: `Bearer ${creds.accessToken}`,
+          });
+          if (r.status === 200) {
+            const email = r.body?.email || 'account verified';
+            const { spreadsheetId, selectedFileName } = doc.config || {};
+            const sheetInfo = selectedFileName ? ` · ${selectedFileName}` : spreadsheetId ? ` · Sheet configured` : ' · No sheet selected yet';
+            result = { passed: true, message: `Google Sheets: ${email}${sheetInfo}` };
+          } else {
+            result = { passed: false, message: r.body?.error?.message || `HTTP ${r.status} — token may be expired` };
+          }
+          break;
+        }
         case 'webhook': {
           const webhookUrl = doc.config?.webhookUrl || doc.config?.outgoingUrl;
           result = webhookUrl
@@ -601,6 +617,401 @@ exports.updateSyncSettings = async (req, res, next) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Google Sheets private helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Column header → Lead field mapping (normalized lower-case header → field name)
+const GSHEET_HEADER_MAP = {
+  'name': 'name', 'contact name': 'name', 'full name': 'name', 'lead name': 'name',
+  'phone': 'phone', 'mobile': 'phone', 'phone number': 'phone',
+  'email': 'email', 'email address': 'email',
+  'company': 'company', 'company name': 'company', 'organization': 'company',
+  'city': 'city', 'state': 'state', 'country': 'country',
+  'industry': 'industry',
+  'budget': 'budget',
+  'service': 'serviceRequired', 'services': 'serviceRequired', 'service required': 'serviceRequired',
+  'website': 'website',
+  'brand': 'brandName', 'brand name': 'brandName',
+};
+const GSHEET_ID_HEADERS = new Set(['id', 'lead id', 'lead_id', 'external id', 'external_id']);
+const normalizeHeader = (h) => String(h).trim().toLowerCase().replace(/[\s_-]+/g, ' ');
+
+// Use refresh_token to get a new access_token from Google
+async function refreshGoogleToken(refreshToken) {
+  const res = await httpPost('oauth2.googleapis.com', '/token', {
+    grant_type:    'refresh_token',
+    client_id:     process.env.GOOGLE_CLIENT_ID,
+    client_secret: process.env.GOOGLE_CLIENT_SECRET,
+    refresh_token: refreshToken,
+  });
+  return res.body; // { access_token, expires_in, token_type } or { error }
+}
+
+// Call the Google Sheets API with an Authorization bearer token
+async function callSheetsApi(accessToken, path) {
+  return httpGet(`https://sheets.googleapis.com/v4${path}`, {
+    Authorization: `Bearer ${accessToken}`,
+  });
+}
+
+// Decrypt token, auto-refresh if within 60s of expiry, re-save if refreshed.
+// Returns a valid access_token string or throws.
+async function getOrRefreshToken(doc, tf) {
+  const creds = decryptCreds('google_sheets', doc.credentials);
+  if (!creds.accessToken) throw new Error('Not connected — access token missing. Please reconnect Google Sheets.');
+
+  const expiresAt = doc.config?.tokenExpiresAt || 0;
+  // Token is still valid
+  if (Date.now() < expiresAt - 60_000) return creds.accessToken;
+
+  // Token expired or expiry unknown — attempt refresh
+  if (!creds.refreshToken) throw new Error('Session expired. Please reconnect Google Sheets.');
+
+  const refreshed = await refreshGoogleToken(creds.refreshToken);
+  if (!refreshed.access_token) {
+    const reason = refreshed.error_description || refreshed.error || 'Token refresh failed';
+    throw new Error(`Session expired: ${reason}. Please reconnect Google Sheets.`);
+  }
+
+  const newToken  = refreshed.access_token;
+  const newExpiry = Date.now() + (refreshed.expires_in || 3600) * 1000;
+
+  const newCreds = encryptCreds('google_sheets', { ...creds, accessToken: newToken });
+  await Integration.findOneAndUpdate(
+    { ...tf, provider: 'google_sheets' },
+    { $set: { credentials: newCreds, 'config.tokenExpiresAt': newExpiry } }
+  );
+
+  return newToken;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/integrations/google_sheets/picker-config
+// Return { accessToken, clientId, apiKey } for the frontend Google Picker.
+// The access_token is scoped to drive.file only — deliberately limited.
+// NEVER returns GOOGLE_CLIENT_SECRET.
+// ─────────────────────────────────────────────────────────────────────────────
+exports.getGoogleSheetsPickerConfig = async (req, res, next) => {
+  try {
+    const tf  = getTenantFilter(req);
+    const doc = await Integration.findOne({ ...tf, provider: 'google_sheets' });
+    if (!doc)                      return next(err('Google Sheets is not connected', 404));
+    if (doc.status !== 'connected') return next(err('Google Sheets is not connected', 400));
+
+    const apiKey = process.env.GOOGLE_PICKER_API_KEY;
+    if (!apiKey) return next(err('GOOGLE_PICKER_API_KEY is not configured on the server', 500));
+
+    let accessToken;
+    try {
+      accessToken = await getOrRefreshToken(doc, tf);
+    } catch (tokenErr) {
+      await Integration.findOneAndUpdate(
+        { ...tf, provider: 'google_sheets' },
+        { $set: { status: 'expired' } }
+      ).catch(() => {});
+      return next(Object.assign(new Error(tokenErr.message), { statusCode: 401 }));
+    }
+
+    res.json({
+      success: true,
+      accessToken,
+      clientId: process.env.GOOGLE_CLIENT_ID,
+      apiKey,
+    });
+  } catch (e) { next(e); }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/integrations/google_sheets/config/verify
+// Verify a spreadsheetId is accessible and return the list of sheet tab names.
+// Called after the Picker returns a file, before the user confirms the tab.
+// Body: { spreadsheetId }
+// ─────────────────────────────────────────────────────────────────────────────
+exports.verifySheetAccess = async (req, res, next) => {
+  try {
+    const tf = getTenantFilter(req);
+    const { spreadsheetId } = req.body || {};
+    if (!spreadsheetId) return next(err('spreadsheetId is required'));
+
+    const doc = await Integration.findOne({ ...tf, provider: 'google_sheets' });
+    if (!doc) return next(err('Google Sheets is not connected', 404));
+
+    let accessToken;
+    try {
+      accessToken = await getOrRefreshToken(doc, tf);
+    } catch (tokenErr) {
+      return next(Object.assign(new Error(tokenErr.message), { statusCode: 401 }));
+    }
+
+    // Fetch spreadsheet metadata — title + sheet/tab names only
+    const safePath = `/spreadsheets/${encodeURIComponent(spreadsheetId)}?fields=properties.title,sheets.properties`;
+    const apiRes   = await callSheetsApi(accessToken, safePath);
+
+    if (apiRes.status === 404) return next(err('Spreadsheet not found or not accessible. Please select the file again using the Picker.', 404));
+    if (apiRes.status === 403) return next(err('Access denied. Please reconnect Google Sheets and re-select the file.', 403));
+    if (apiRes.status !== 200) return next(err(apiRes.body?.error?.message || `Sheets API error (HTTP ${apiRes.status})`, 502));
+
+    const fileName       = apiRes.body.properties?.title || 'Untitled Spreadsheet';
+    const availableSheets = (apiRes.body.sheets || [])
+      .map(s => s.properties?.title)
+      .filter(Boolean);
+
+    res.json({ success: true, spreadsheetId, fileName, availableSheets });
+  } catch (e) { next(e); }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/integrations/google_sheets/config
+// Save the spreadsheetId + sheetName chosen by the user after Picker + tab selection.
+// Body: { spreadsheetId, sheetName, selectedFileName }
+// ─────────────────────────────────────────────────────────────────────────────
+exports.saveSheetConfig = async (req, res, next) => {
+  try {
+    const tf = getTenantFilter(req);
+    const { spreadsheetId, sheetName, selectedFileName } = req.body || {};
+    if (!spreadsheetId) return next(err('spreadsheetId is required'));
+    if (!sheetName)     return next(err('sheetName is required'));
+
+    const doc = await Integration.findOne({ ...tf, provider: 'google_sheets' });
+    if (!doc) return next(err('Google Sheets is not connected', 404));
+
+    const updated = await Integration.findOneAndUpdate(
+      { ...tf, provider: 'google_sheets' },
+      {
+        $set: {
+          'config.spreadsheetId':    String(spreadsheetId).trim(),
+          'config.sheetName':        String(sheetName).trim(),
+          'config.selectedFileName': selectedFileName ? String(selectedFileName).trim() : '',
+        },
+      },
+      { new: true }
+    );
+
+    await logAction({
+      action:      'integration_updated',
+      module:      'integrations',
+      performedBy: req.user._id,
+      tenantId:    tf.tenantId,
+      resourceId:  'google_sheets',
+      resourceType:'integration',
+      details:     { spreadsheetId, sheetName, selectedFileName },
+      req,
+    });
+
+    res.json({ success: true, data: toClient(updated), message: 'Sheet configuration saved' });
+  } catch (e) { next(e); }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/integrations/google_sheets/sync
+// Read all rows from the configured sheet and upsert as Leads.
+//
+// Deduplication — four ordered steps (deterministic, no broad OR upsert):
+//   1. Exact sourceKey match  → skip (never overwrite CRM data)
+//   2. Phone match (separate) → link only if lead has no existing externalLeadId
+//   3. Email match (separate) → link only if lead has no existing externalLeadId
+//   4. No match               → create new Lead
+//
+// Returns { created, skipped, linked, errors[] }
+// ─────────────────────────────────────────────────────────────────────────────
+exports.syncGoogleSheet = async (req, res, next) => {
+  try {
+    const tf  = getTenantFilter(req);
+    const doc = await Integration.findOne({ ...tf, provider: 'google_sheets' });
+    if (!doc)                      return next(err('Google Sheets is not connected', 404));
+    if (doc.status !== 'connected' && doc.status !== 'sync_error')
+      return next(err('Google Sheets is not connected. Please connect first.', 400));
+
+    const { spreadsheetId, sheetName } = doc.config || {};
+    if (!spreadsheetId) return next(err('No spreadsheet configured. Please select a Google Sheet first.', 400));
+    if (!sheetName)     return next(err('No sheet tab configured. Please select a sheet tab first.', 400));
+
+    // Get a valid access token (auto-refresh if expired)
+    let accessToken;
+    try {
+      accessToken = await getOrRefreshToken(doc, tf);
+    } catch (tokenErr) {
+      await Integration.findOneAndUpdate(
+        { ...tf, provider: 'google_sheets' },
+        { $set: { status: 'expired', 'syncSettings.lastSyncStatus': 'failed', 'syncSettings.lastSyncError': tokenErr.message } }
+      );
+      return next(Object.assign(new Error(tokenErr.message), { statusCode: 401 }));
+    }
+
+    // Fetch up to 1000 rows (A1:Z1000) — sufficient for most sheets
+    const range    = encodeURIComponent(`${sheetName}!A1:Z1000`);
+    const sheetsRes = await callSheetsApi(accessToken, `/spreadsheets/${spreadsheetId}/values/${range}`);
+
+    if (sheetsRes.status === 401) {
+      await Integration.findOneAndUpdate(
+        { ...tf, provider: 'google_sheets' },
+        { $set: { status: 'expired', 'syncSettings.lastSyncStatus': 'failed', 'syncSettings.lastSyncError': 'Authorization expired' } }
+      );
+      return next(err('Google authorization expired. Please reconnect.', 401));
+    }
+    if (sheetsRes.status !== 200) {
+      const errMsg = sheetsRes.body?.error?.message || `Sheets API error (HTTP ${sheetsRes.status})`;
+      await Integration.findOneAndUpdate(
+        { ...tf, provider: 'google_sheets' },
+        { $set: { status: 'sync_error', 'syncSettings.lastSyncStatus': 'failed', 'syncSettings.lastSyncError': errMsg } }
+      );
+      return next(err(errMsg, 502));
+    }
+
+    const rows = sheetsRes.body.values || [];
+    if (rows.length < 2) {
+      const now = new Date();
+      await Integration.findOneAndUpdate(
+        { ...tf, provider: 'google_sheets' },
+        { $set: { 'syncSettings.lastSync': now, 'syncSettings.lastSyncStatus': 'success', 'syncSettings.lastSyncError': null } }
+      );
+      return res.json({ success: true, created: 0, skipped: 0, linked: 0, errors: [], message: 'No data rows found in the sheet.' });
+    }
+
+    // Parse headers and build column-index map
+    const headers = rows[0].map(normalizeHeader);
+    const fieldMap = {}; // { leadField: colIndex } — first matching header wins
+    let idColIndex  = -1;
+
+    for (let c = 0; c < headers.length; c++) {
+      const h = headers[c];
+      if (GSHEET_ID_HEADERS.has(h)) {
+        if (idColIndex === -1) idColIndex = c; // first ID column wins
+      } else if (GSHEET_HEADER_MAP[h] && fieldMap[GSHEET_HEADER_MAP[h]] === undefined) {
+        fieldMap[GSHEET_HEADER_MAP[h]] = c;
+      }
+    }
+
+    if (fieldMap.name === undefined) {
+      return next(err('Sheet must have a "Name" column. Please check the header row.', 400));
+    }
+
+    const Lead = require('../models/Lead');
+    let created = 0, skipped = 0, linked = 0;
+    const errors = [];
+
+    for (let i = 1; i < rows.length; i++) {
+      const row      = rows[i];
+      const rowIndex = i + 1; // 1-based; row 1 = header, row 2 = first data row
+
+      try {
+        const getVal = (field) => {
+          const idx = fieldMap[field];
+          return idx !== undefined ? String(row[idx] || '').trim() : '';
+        };
+
+        const name = getVal('name');
+        if (!name) continue; // Skip rows without a name
+
+        const phone          = getVal('phone');
+        const email          = getVal('email');
+        const company        = getVal('company');
+        const city           = getVal('city');
+        const state          = getVal('state');
+        const country        = getVal('country');
+        const industry       = getVal('industry');
+        const website        = getVal('website');
+        const brandName      = getVal('brandName');
+        const serviceRequired = getVal('serviceRequired');
+        const budgetRaw      = getVal('budget');
+        const budget         = budgetRaw ? (parseFloat(budgetRaw.replace(/[^0-9.]/g, '')) || 0) : 0;
+
+        // Unmapped columns → customFields (for reference; not indexed)
+        const mappedColIndices = new Set([idColIndex, ...Object.values(fieldMap)].filter(n => n !== -1));
+        const customFields = {};
+        for (let c = 0; c < headers.length; c++) {
+          if (!mappedColIndices.has(c) && headers[c] && row[c]) {
+            customFields[headers[c]] = String(row[c]).trim();
+          }
+        }
+
+        // ── Deterministic external key ──────────────────────────────────────
+        const idColVal      = idColIndex !== -1 ? String(row[idColIndex] || '').trim() : '';
+        const externalLeadId = idColVal
+          ? `gsheets:${spreadsheetId}:${sheetName}:ID${idColVal}`
+          : `gsheets:${spreadsheetId}:${sheetName}:R${rowIndex}`;
+        const externalSource = 'google_sheets';
+
+        // Step 1 — Primary: exact source key match → skip
+        const byKey = await Lead.findOne({ tenantId: tf.tenantId, externalLeadId, externalSource });
+        if (byKey) { skipped++; continue; }
+
+        // Step 2 — Secondary: phone match (separate query)
+        if (phone) {
+          const byPhone = await Lead.findOne({ tenantId: tf.tenantId, phone });
+          if (byPhone) {
+            // Link if not already linked to another google_sheets source key
+            if (!byPhone.externalLeadId || byPhone.externalSource !== 'google_sheets') {
+              await Lead.updateOne({ _id: byPhone._id }, { $set: { externalLeadId, externalSource } });
+            }
+            linked++; continue;
+          }
+        }
+
+        // Step 3 — Tertiary: email match (separate query)
+        if (email) {
+          const byEmail = await Lead.findOne({ tenantId: tf.tenantId, email });
+          if (byEmail) {
+            if (!byEmail.externalLeadId || byEmail.externalSource !== 'google_sheets') {
+              await Lead.updateOne({ _id: byEmail._id }, { $set: { externalLeadId, externalSource } });
+            }
+            linked++; continue;
+          }
+        }
+
+        // Step 4 — Create new lead
+        await Lead.create({
+          name, phone, email, company, city, state, country, industry,
+          website, brandName, serviceRequired, budget,
+          customFields,
+          externalLeadId,
+          externalSource,
+          source:    'import',
+          sheetName,
+          tenantId:  tf.tenantId,
+          createdBy: req.user._id,
+        });
+        created++;
+
+      } catch (rowErr) {
+        errors.push({ row: rowIndex, reason: rowErr.message });
+      }
+    }
+
+    // Persist sync result
+    const now = new Date();
+    const syncErrMsg = errors.length ? `${errors.length} row(s) failed — check errors` : null;
+    await Integration.findOneAndUpdate(
+      { ...tf, provider: 'google_sheets' },
+      {
+        $set: {
+          status:                          'connected',
+          'syncSettings.lastSync':         now,
+          'syncSettings.lastSyncStatus':   errors.length && !created && !linked ? 'failed' : 'success',
+          'syncSettings.lastSyncError':    syncErrMsg,
+        },
+      }
+    );
+
+    await logAction({
+      action:      'integration_synced',
+      module:      'integrations',
+      performedBy: req.user._id,
+      tenantId:    tf.tenantId,
+      resourceId:  'google_sheets',
+      resourceType:'integration',
+      details:     { spreadsheetId, sheetName, created, skipped, linked, errors: errors.length },
+      req,
+    });
+
+    const message = `Sync complete — ${created} new, ${skipped} skipped, ${linked} linked` +
+      (errors.length ? `, ${errors.length} error(s)` : '');
+
+    res.json({ success: true, created, skipped, linked, errors, message });
+  } catch (e) { next(e); }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 // GET /api/integrations/oauth/:provider/init
 // Redirect browser to external OAuth provider's authorization page
 // ─────────────────────────────────────────────────────────────────────────────
@@ -625,9 +1036,10 @@ exports.oauthInit = async (req, res, next) => {
           tenantId,
           provider,
           oauthState: state,
-          category: provider === 'google' ? 'google' : 'marketing',
-          name: provider === 'google' ? 'Google Workspace'
-              : provider === 'whatsapp' ? 'WhatsApp Business'
+          category: (provider === 'google' || provider === 'google_sheets') ? 'google' : 'marketing',
+          name: provider === 'google'        ? 'Google Workspace'
+              : provider === 'google_sheets' ? 'Google Sheets'
+              : provider === 'whatsapp'      ? 'WhatsApp Business'
               : 'Meta Ads',
         },
       },
@@ -659,6 +1071,21 @@ exports.oauthInit = async (req, res, next) => {
           'https://www.googleapis.com/auth/gmail.readonly',
         ].join(' '));
         const redirectUri = encodeURIComponent(`${callbackBase}/api/integrations/oauth/google/callback`);
+        authUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${clientId}&redirect_uri=${redirectUri}&response_type=code&scope=${scope}&state=${state}&access_type=offline&prompt=consent`;
+        break;
+      }
+      case 'google_sheets': {
+        const clientId = process.env.GOOGLE_CLIENT_ID;
+        if (!clientId) return next(err('GOOGLE_CLIENT_ID is not configured on the server', 500));
+        // Minimal scopes: identity for connectedEmail/Name + drive.file for Picker-selected files only.
+        // drive.file grants access ONLY to files the user explicitly opens via Google Picker.
+        const scope = encodeURIComponent([
+          'openid',
+          'email',
+          'profile',
+          'https://www.googleapis.com/auth/drive.file',
+        ].join(' '));
+        const redirectUri = encodeURIComponent(`${callbackBase}/api/integrations/oauth/google_sheets/callback`);
         authUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${clientId}&redirect_uri=${redirectUri}&response_type=code&scope=${scope}&state=${state}&access_type=offline&prompt=consent`;
         break;
       }
@@ -755,6 +1182,42 @@ exports.oauthCallback = async (req, res, next) => {
 
         tokens        = { accessToken: tokenRes.body.access_token, refreshToken: tokenRes.body.refresh_token };
         displayConfig = { connectedEmail: userRes.body?.email, connectedName: userRes.body?.name };
+        break;
+      }
+
+      case 'google_sheets': {
+        const clientId     = process.env.GOOGLE_CLIENT_ID;
+        const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+        // Redirect URI must exactly match what was used in oauthInit
+        const redirectUri  = `${callbackBase}/api/integrations/oauth/google_sheets/callback`;
+
+        const tokenRes = await httpPost('oauth2.googleapis.com', '/token', {
+          code,
+          client_id:     clientId,
+          client_secret: clientSecret,
+          redirect_uri:  redirectUri,
+          grant_type:    'authorization_code',
+        });
+
+        if (!tokenRes.body?.access_token) {
+          throw new Error(tokenRes.body?.error_description || 'Google Sheets token exchange failed');
+        }
+
+        // Get user identity (openid + email + profile scopes)
+        const userRes = await httpGet('https://www.googleapis.com/oauth2/v2/userinfo', {
+          Authorization: `Bearer ${tokenRes.body.access_token}`,
+        });
+
+        tokens = {
+          accessToken:  tokenRes.body.access_token,
+          refreshToken: tokenRes.body.refresh_token,
+        };
+        // Store token expiry in config (not credentials) — not sensitive
+        displayConfig = {
+          connectedEmail:  userRes.body?.email,
+          connectedName:   userRes.body?.name,
+          tokenExpiresAt:  Date.now() + (tokenRes.body.expires_in || 3600) * 1000,
+        };
         break;
       }
 

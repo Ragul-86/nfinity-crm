@@ -12,6 +12,11 @@ const {
   oauthInit,
   oauthCallback,
   setupGoogleSheet,
+  // Google Sheets OAuth (drive.file + Picker flow)
+  getGoogleSheetsPickerConfig,
+  verifySheetAccess,
+  saveSheetConfig,
+  syncGoogleSheet,
 } = require('../controllers/integrationController');
 
 // ── OAuth callback is PUBLIC — the OAuth provider redirects here with no cookie ──
@@ -26,6 +31,13 @@ router.use(protect);
 const ALLOWED_ROLES = ['client_super_admin', 'super_admin'];
 
 router.get('/oauth/:provider/init', authorize(...ALLOWED_ROLES), oauthInit);
+
+// ── Google Sheets (OAuth + Picker flow) ──────────────────────────────────────
+// These MUST come before the generic /:provider wildcard routes below.
+router.get('/google_sheets/picker-config',   authorize(...ALLOWED_ROLES), getGoogleSheetsPickerConfig);
+router.post('/google_sheets/config/verify',  authorize(...ALLOWED_ROLES), verifySheetAccess);
+router.post('/google_sheets/config',         authorize(...ALLOWED_ROLES), saveSheetConfig);
+router.post('/google_sheets/sync',           authorize(...ALLOWED_ROLES), syncGoogleSheet);
 
 // ── Integration CRUD ──────────────────────────────────────────────────────────
 // These must come AFTER the /oauth/* routes to avoid /:provider matching "oauth".

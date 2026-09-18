@@ -181,7 +181,9 @@ export default function IntegrationCard({
             disabled={readOnly}
           >
             <PlugZap className="w-3.5 h-3.5" />
-            {config.authType === 'oauth' ? config.oauthLabel || 'Connect' : 'Connect'}
+            {(config.authType === 'oauth' || config.authType === 'oauth_picker')
+              ? config.oauthLabel || 'Connect'
+              : 'Connect'}
           </Button>
         ) : (
           /* Connected or failed */

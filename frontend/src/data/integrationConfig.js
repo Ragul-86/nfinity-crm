@@ -274,7 +274,31 @@ export const INTEGRATIONS = [
     displayFields: ['webhookUrl'],
   },
 
-  // ── GOOGLE SHEETS LEAD SYNC ────────────────────────────────────────────────
+  // ── GOOGLE SHEETS OAUTH (Picker-based, drive.file scope) ──────────────────
+  {
+    id: 'google_sheets',
+    category: 'google',
+    name: 'Google Sheets',
+    description: 'Connect a Google Sheet to automatically import leads. Select your sheet with Google Picker — no sharing settings required.',
+    icon: '📗',
+    color: '#0F9D58',
+    // oauth_picker = two-step: OAuth popup, then Google Picker for sheet selection
+    authType: 'oauth_picker',
+    oauthLabel: 'Connect with Google',
+    syncIntervalMinutes: 0, // 0 = show Sync Now button; manual only (no auto-sync interval)
+    syncLabel: 'Manual sync',
+    supportsWebhook: false,
+    supportsTestConnection: true,
+    fields: [],       // No manual credential fields — OAuth only
+    configFields: [
+      { key: 'connectedEmail',  label: 'Connected Account',  type: 'readonly' },
+      { key: 'selectedFileName', label: 'Selected Sheet',    type: 'readonly' },
+      { key: 'sheetName',       label: 'Sheet Tab',         type: 'readonly' },
+    ],
+    displayFields: ['selectedFileName', 'sheetName'],
+  },
+
+  // ── GOOGLE SHEETS LEAD SYNC (Apps Script / HMAC webhook) ──────────────────
   {
     id: 'google_sheet',
     category: 'developer',

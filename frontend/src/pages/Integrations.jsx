@@ -11,6 +11,7 @@ import PageHeader from '@/components/common/PageHeader'
 import IntegrationCard from '@/components/integrations/IntegrationCard'
 import ConnectModal from '@/components/integrations/ConnectModal'
 import DisconnectDialog from '@/components/integrations/DisconnectDialog'
+import GoogleSheetsConnectFlow from '@/components/integrations/GoogleSheetsConnectFlow'
 
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
@@ -55,6 +56,9 @@ export default function Integrations() {
   const [connectModalConfig, setConnectModalConfig]   = useState(null) // integration config
   const [connectModalIntegration, setConnectModalIntegration] = useState(null) // live data
   const [disconnectConfig, setDisconnectConfig] = useState(null)
+  // Google Sheets two-step flow (OAuth + Picker) — separate from standard ConnectModal
+  const [gsheetsFlowOpen, setGsheetsFlowOpen]               = useState(false)
+  const [gsheetsIntegration, setGsheetsIntegration]         = useState(null)
   const [syncingId, setSyncingId]   = useState(null)
   const [testingId,  setTestingId]  = useState(null)
 
@@ -101,8 +105,14 @@ export default function Integrations() {
       qc.invalidateQueries(['integrations'])
       setSyncingId(null)
     },
-    onError: (err) => {
-      toast.error(err?.response?.data?.message || 'Sync failed')
+    onError: (err, id) => {
+      const msg = err?.response?.data?.message || 'Sync failed'
+      toast.error(msg)
+      // If Google Sheets token expired, prompt reconnect
+      if (id === 'google_sheets' && err?.response?.status === 401) {
+        const liveInt = integrationMap['google_sheets']
+        if (liveInt) { setGsheetsIntegration(liveInt); setGsheetsFlowOpen(true) }
+      }
       setSyncingId(null)
     },
   })
@@ -126,6 +136,12 @@ export default function Integrations() {
   })
 
   const handleConnect = (config, integration) => {
+    // google_sheets uses its own two-step OAuth + Picker flow
+    if (config.authType === 'oauth_picker') {
+      setGsheetsIntegration(integration || null)
+      setGsheetsFlowOpen(true)
+      return
+    }
     setConnectModalConfig(config)
     setConnectModalIntegration(integration || null)
   }
@@ -275,12 +291,19 @@ export default function Integrations() {
         </div>
       )}
 
-      {/* Connect modal */}
+      {/* Connect modal — standard providers */}
       <ConnectModal
         open={!!connectModalConfig}
         onClose={() => { setConnectModalConfig(null); setConnectModalIntegration(null) }}
         config={connectModalConfig}
         integration={connectModalIntegration}
+      />
+
+      {/* Google Sheets OAuth + Picker two-step flow */}
+      <GoogleSheetsConnectFlow
+        open={gsheetsFlowOpen}
+        onClose={() => { setGsheetsFlowOpen(false); setGsheetsIntegration(null) }}
+        integration={gsheetsIntegration}
       />
 
       {/* Disconnect dialog */}
