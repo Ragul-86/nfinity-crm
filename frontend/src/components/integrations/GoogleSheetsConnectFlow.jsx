@@ -251,7 +251,7 @@ export default function GoogleSheetsConnectFlow({ open, onClose, integration }) 
     setLoading(true)
     setVerifyError('')
     try {
-      const { data } = await api.post('/integrations/google_sheets/config/verify', { spreadsheetId: fileId })
+      const { data } = await api.post('/integrations/google_sheets/config/verify', { spreadsheetId: fileId, fileName })
       setSpreadsheetId(fileId)
       setSelectedFile(data.fileName || fileName)
       setAvailableSheets(data.availableSheets || [])
