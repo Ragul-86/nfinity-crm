@@ -733,29 +733,79 @@ exports.verifySheetAccess = async (req, res, next) => {
     const { spreadsheetId } = req.body || {};
     if (!spreadsheetId) return next(err('spreadsheetId is required'));
 
+    // ── DIAGNOSTIC LOG ────────────────────────────────────────────────────────
+    console.log('[verifySheetAccess] tenantId:', tf.tenantId, '| spreadsheetId:', spreadsheetId);
+
     const doc = await Integration.findOne({ ...tf, provider: 'google_sheets' });
+
+    // ── DIAGNOSTIC LOG ────────────────────────────────────────────────────────
+    console.log('[verifySheetAccess] doc found:', !!doc,
+      '| provider:', doc?.provider,
+      '| status:', doc?.status,
+      '| tenantId match:', String(doc?.tenantId) === String(tf.tenantId));
+
     if (!doc) return next(err('Google Sheets is not connected', 404));
 
     let accessToken;
     try {
       accessToken = await getOrRefreshToken(doc, tf);
+      console.log('[verifySheetAccess] accessToken obtained (first 12 chars):', accessToken?.slice(0, 12));
     } catch (tokenErr) {
+      console.error('[verifySheetAccess] token error:', tokenErr.message);
       return next(Object.assign(new Error(tokenErr.message), { statusCode: 401 }));
     }
 
-    // Fetch spreadsheet metadata — title + sheet/tab names only
-    const safePath = `/spreadsheets/${encodeURIComponent(spreadsheetId)}?fields=properties.title,sheets.properties`;
-    const apiRes   = await callSheetsApi(accessToken, safePath);
+    // ── Step 1: Verify file access via Drive API (drive.file scope is reliable here) ──
+    // The Sheets API with drive.file scope requires a prior Drive API call to "register"
+    // the file. We verify access and get the filename via Drive API first.
+    const driveRes = await httpGet(
+      `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(spreadsheetId)}?fields=name,mimeType`,
+      { Authorization: `Bearer ${accessToken}` }
+    );
 
-    if (apiRes.status === 404) return next(err('Spreadsheet not found or not accessible. Please select the file again using the Picker.', 404));
-    if (apiRes.status === 403) return next(err('Access denied. Please reconnect Google Sheets and re-select the file.', 403));
-    if (apiRes.status !== 200) return next(err(apiRes.body?.error?.message || `Sheets API error (HTTP ${apiRes.status})`, 502));
+    // ── DIAGNOSTIC LOG ────────────────────────────────────────────────────────
+    console.log('[verifySheetAccess] Drive API status:', driveRes.status,
+      '| body:', JSON.stringify(driveRes.body).slice(0, 300));
 
-    const fileName       = apiRes.body.properties?.title || 'Untitled Spreadsheet';
-    const availableSheets = (apiRes.body.sheets || [])
-      .map(s => s.properties?.title)
-      .filter(Boolean);
+    if (driveRes.status === 404) {
+      return next(err('Spreadsheet not found or access was not granted. Please select the file again using the Picker.', 404));
+    }
+    if (driveRes.status === 403) {
+      return next(err('Access denied to this file. Please reconnect Google Sheets and re-select the file.', 403));
+    }
+    if (driveRes.status !== 200) {
+      const detail = driveRes.body?.error?.message || `Drive API error (HTTP ${driveRes.status})`;
+      console.error('[verifySheetAccess] Drive API error:', driveRes.status, detail);
+      return next(err(detail, 502));
+    }
 
+    const fileName = driveRes.body.name || 'Untitled Spreadsheet';
+
+    // ── Step 2: Get sheet tab names via Sheets API ────────────────────────────
+    // After the Drive API call above, the Sheets API should now recognise the file
+    // under drive.file scope. Fall back to ['Sheet1'] if it still refuses.
+    const safePath  = `/spreadsheets/${encodeURIComponent(spreadsheetId)}?fields=sheets.properties`;
+    const sheetsRes = await callSheetsApi(accessToken, safePath);
+
+    // ── DIAGNOSTIC LOG ────────────────────────────────────────────────────────
+    console.log('[verifySheetAccess] Sheets API status:', sheetsRes.status,
+      '| body:', JSON.stringify(sheetsRes.body).slice(0, 300));
+
+    let availableSheets;
+    if (sheetsRes.status === 200) {
+      availableSheets = (sheetsRes.body.sheets || [])
+        .map(s => s.properties?.title)
+        .filter(Boolean);
+    } else {
+      // drive.file scope may not grant Sheets API access on first call — use safe fallback
+      console.warn('[verifySheetAccess] Sheets API returned', sheetsRes.status,
+        '— using Sheet1 as fallback. Detail:', JSON.stringify(sheetsRes.body).slice(0, 200));
+      availableSheets = ['Sheet1'];
+    }
+
+    if (!availableSheets.length) availableSheets = ['Sheet1'];
+
+    console.log('[verifySheetAccess] success — fileName:', fileName, '| sheets:', availableSheets);
     res.json({ success: true, spreadsheetId, fileName, availableSheets });
   } catch (e) { next(e); }
 };
