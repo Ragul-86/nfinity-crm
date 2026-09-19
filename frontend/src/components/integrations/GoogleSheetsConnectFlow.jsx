@@ -189,6 +189,7 @@ export default function GoogleSheetsConnectFlow({ open, onClose, integration }) 
 
       const pickerBuilder = new google.picker.PickerBuilder()
         .setTitle('Select a Google Sheet')
+        .setAppId('503816714173')
         .setOAuthToken(accessToken)
         .addView(view)
         .setCallback((pickerData) => {
