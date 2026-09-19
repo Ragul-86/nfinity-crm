@@ -1126,13 +1126,14 @@ exports.oauthInit = async (req, res, next) => {
       case 'google_sheets': {
         const clientId = process.env.GOOGLE_CLIENT_ID;
         if (!clientId) return next(err('GOOGLE_CLIENT_ID is not configured on the server', 500));
+        // drive.file: required by Google Picker to browse/select Drive files.
         // spreadsheets.readonly: read any sheet the user has access to (title + values + tabs).
-        // drive.file was removed — it returns 404 for pre-existing files not "opened" by the app.
-        // The Google Picker still works for file selection; Sheets API handles all data access.
+        // Both scopes are needed — drive.file for Picker, spreadsheets.readonly for Sheets API reads.
         const scope = encodeURIComponent([
           'openid',
           'email',
           'profile',
+          'https://www.googleapis.com/auth/drive.file',
           'https://www.googleapis.com/auth/spreadsheets.readonly',
         ].join(' '));
         const redirectUri = encodeURIComponent(`${callbackBase}/api/integrations/oauth/google_sheets/callback`);
