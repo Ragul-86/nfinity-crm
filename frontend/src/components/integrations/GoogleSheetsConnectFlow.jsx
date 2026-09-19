@@ -188,11 +188,24 @@ export default function GoogleSheetsConnectFlow({ open, onClose, integration }) 
         .setTitle('Select a Google Sheet')
         .setOAuthToken(accessToken)
         .addView(view)
-        .setCallback(async (pickerData) => {
-          if (pickerData.action === google.picker.Action.PICKED) {
-            const file = pickerData.docs[0]
-            await handleFilePicked(file.id, file.name)
-          } else if (pickerData.action === google.picker.Action.CANCEL) {
+        .setCallback((pickerData) => {
+          // Use the official enum constants — do NOT use async here (Picker does not
+          // await the callback, so an async function silently swallows any error).
+          const action = pickerData[google.picker.Response.ACTION]
+          if (action === google.picker.Action.PICKED) {
+            const docs = pickerData[google.picker.Response.DOCUMENTS]
+            if (!docs || docs.length === 0) {
+              setLoading(false)
+              toast.error('No file was returned by Google Picker. Please try again.')
+              return
+            }
+            const doc = docs[0]
+            // handleFilePicked is async and handles its own errors internally
+            handleFilePicked(
+              doc[google.picker.Document.ID],
+              doc[google.picker.Document.NAME]
+            )
+          } else if (action === google.picker.Action.CANCEL) {
             setLoading(false)
           }
         })
