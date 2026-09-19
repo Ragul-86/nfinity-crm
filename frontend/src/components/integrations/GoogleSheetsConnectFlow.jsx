@@ -177,11 +177,9 @@ export default function GoogleSheetsConnectFlow({ open, onClose, integration }) 
       // Fetch token + keys from the backend (never GOOGLE_CLIENT_SECRET)
       const { data } = await api.get('/integrations/google_sheets/picker-config')
       const { accessToken, apiKey } = data
-      console.log('[GSheets] picker-config received. apiKey present:', !!apiKey)
 
       // Load gapi.picker if not already loaded
       await loadGapiPicker()
-      console.log('[GSheets] gapi.picker loaded. window.google.picker:', !!window.google?.picker)
 
       const google = window.google
 
@@ -194,72 +192,51 @@ export default function GoogleSheetsConnectFlow({ open, onClose, integration }) 
         .setOAuthToken(accessToken)
         .addView(view)
         .setCallback((pickerData) => {
-          // ── DIAGNOSTIC: log every callback invocation ─────────────────────
-          console.log('[GSheets] Picker callback fired. Raw pickerData:', pickerData)
-
+          // NOTE: callback must be synchronous — Picker does not await Promises
           try {
             const action = pickerData[google.picker.Response.ACTION]
-            console.log('[GSheets] action (enum):', action,
-              '| PICKED value:', google.picker.Action.PICKED,
-              '| CANCEL value:', google.picker.Action.CANCEL)
 
             if (action === google.picker.Action.PICKED) {
               const docs = pickerData[google.picker.Response.DOCUMENTS]
-              console.log('[GSheets] DOCUMENTS array:', docs)
 
               if (!docs || docs.length === 0) {
-                console.warn('[GSheets] PICKED but docs array is empty/null')
                 setLoading(false)
                 toast.error('Google Picker returned no file. Please try again.')
                 return
               }
 
-              const doc  = docs[0]
+              const doc      = docs[0]
               const fileId   = doc[google.picker.Document.ID]
               const fileName = doc[google.picker.Document.NAME]
-              console.log('[GSheets] Selected doc. ID:', fileId, '| Name:', fileName)
-              console.log('[GSheets] Full doc object:', doc)
 
               if (!fileId) {
-                console.error('[GSheets] fileId is empty — doc object may use different keys', doc)
                 setLoading(false)
-                toast.error('Could not read selected file ID. Check console for details.')
+                toast.error('Could not read the selected file ID. Please try again.')
                 return
               }
 
               handleFilePicked(fileId, fileName)
             } else if (action === google.picker.Action.CANCEL) {
-              console.log('[GSheets] Picker cancelled')
               setLoading(false)
-            } else {
-              // e.g. action === 'loaded' — ignore
-              console.log('[GSheets] Non-pick action, ignoring:', action)
             }
+            // other actions (e.g. 'loaded') are silently ignored
           } catch (cbErr) {
-            // Catch synchronous errors in the callback — they would otherwise be silently lost
-            console.error('[GSheets] Error inside Picker callback:', cbErr)
+            // Catch synchronous errors — they would otherwise be silently lost
             setLoading(false)
-            toast.error('Picker callback error: ' + (cbErr?.message || String(cbErr)))
+            toast.error('Picker error: ' + (cbErr?.message || String(cbErr)))
           }
         })
 
-      if (apiKey) {
-        pickerBuilder.setDeveloperKey(apiKey)
-        console.log('[GSheets] Developer key set on Picker')
-      } else {
-        console.warn('[GSheets] No developer key — Picker may not fire callback reliably')
-      }
+      if (apiKey) pickerBuilder.setDeveloperKey(apiKey)
 
       const picker = pickerBuilder.build()
       pickerRef.current = picker   // keep alive while open
       picker.setVisible(true)
-      console.log('[GSheets] Picker set visible')
 
-      // setLoading(false) is handled inside handleFilePicked or on cancel above
+      // setLoading(false) is handled inside handleFilePicked or on cancel/error above
     } catch (e) {
       setLoading(false)
       const msg = e?.response?.data?.message || e?.message || 'Failed to open Google Picker'
-      console.error('[GSheets] Error opening Picker:', e)
       if (e?.response?.status === 401) {
         toast.error('Session expired. Please reconnect Google Sheets.')
         setStep('oauth')
@@ -271,23 +248,18 @@ export default function GoogleSheetsConnectFlow({ open, onClose, integration }) 
 
   // Called by Picker callback after user picks a file
   const handleFilePicked = useCallback(async (fileId, fileName) => {
-    console.log('[GSheets] handleFilePicked called. fileId:', fileId, '| fileName:', fileName)
     setLoading(true)
     setVerifyError('')
     try {
-      console.log('[GSheets] Calling POST /integrations/google_sheets/config/verify ...')
       const { data } = await api.post('/integrations/google_sheets/config/verify', { spreadsheetId: fileId })
-      console.log('[GSheets] verify response:', data)
       setSpreadsheetId(fileId)
       setSelectedFile(data.fileName || fileName)
       setAvailableSheets(data.availableSheets || [])
       setSheetName(data.availableSheets?.[0] || '')
-      console.log('[GSheets] setStep(tab). availableSheets:', data.availableSheets)
       setStep('tab')
     } catch (e) {
       const errMsg = e?.response?.data?.message || e?.message || 'Could not verify sheet access.'
-      console.error('[GSheets] verify error. status:', e?.response?.status, '| message:', errMsg, '| full error:', e)
-      setVerifyError(errMsg + ' (Check browser console for details.)')
+      setVerifyError(errMsg)
     } finally {
       setLoading(false)
     }
@@ -301,10 +273,7 @@ export default function GoogleSheetsConnectFlow({ open, onClose, integration }) 
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
-    <Dialog open={open} onOpenChange={(o) => {
-        console.log('[GSheets] Dialog onOpenChange:', o, '| current step:', step)
-        if (!o) onClose()
-      }}>
+    <Dialog open={open} onOpenChange={(o) => { if (!o) onClose() }}>
       <DialogContent className="max-w-md" aria-describedby={undefined}>
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
