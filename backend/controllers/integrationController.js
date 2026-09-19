@@ -1,6 +1,8 @@
 const crypto = require('crypto');
 const https  = require('https');
-const Integration = require('../models/Integration');
+const Integration    = require('../models/Integration');
+const Pipeline       = require('../models/Pipeline');
+const PipelineMapping = require('../models/PipelineMapping');
 const { logAction }    = require('../utils/auditLogger');
 const { encrypt, decrypt, encryptFields, decryptFields, maskSecret } = require('../utils/encryption');
 const { getTenantFilter, injectTenantId } = require('../middleware/auth');
@@ -632,9 +634,62 @@ const GSHEET_HEADER_MAP = {
   'service': 'serviceRequired', 'services': 'serviceRequired', 'service required': 'serviceRequired',
   'website': 'website',
   'brand': 'brandName', 'brand name': 'brandName',
+  // Meta Ads sheet columns
+  'platform': 'source',  // platform column → source (normalised via normaliseSrcGS)
 };
 const GSHEET_ID_HEADERS = new Set(['id', 'lead id', 'lead_id', 'external id', 'external_id']);
 const normalizeHeader = (h) => String(h).trim().toLowerCase().replace(/[\s_-]+/g, ' ');
+
+// Source normalisation — mirrors gsheetWebhookController (keep in sync)
+const _VALID_SOURCES_GS = new Set([
+  'website', 'referral', 'social_media', 'cold_call', 'email', 'event',
+  'meta_ads', 'lead_form', 'facebook_ads', 'instagram_ads', 'whatsapp',
+  'google_ads', 'landing_page', 'import', 'api', 'webhook', 'manual', 'other',
+]);
+const _SOURCE_ALIASES_GS = {
+  facebook: 'facebook_ads', instagram: 'instagram_ads', google: 'google_ads',
+  fb: 'facebook_ads', ig: 'instagram_ads', sheet: 'import', spreadsheet: 'import', gsheet: 'import',
+};
+function normaliseSrcGS(raw) {
+  if (!raw) return 'import';
+  const s = String(raw).trim().toLowerCase().replace(/\s+/g, '_');
+  if (_VALID_SOURCES_GS.has(s)) return s;
+  if (_SOURCE_ALIASES_GS[s])    return _SOURCE_ALIASES_GS[s];
+  return 'other';
+}
+
+// Pipeline resolution for native Google Sheets sync — mirrors gsheetWebhookController
+async function resolvePipelineGS(tenantId, { adId, metaFormId, sheetName, source }) {
+  try {
+    const tiers = [
+      adId       ? { adId }       : null,
+      metaFormId ? { metaFormId } : null,
+      sheetName  ? { sheetName }  : null,
+      source     ? { source }     : null,
+    ].filter(Boolean);
+
+    let pipeline = null, stageOverride = null;
+    for (const criterion of tiers) {
+      const mapping = await PipelineMapping.findOne({ tenantId, isActive: true, ...criterion }).populate('pipelineId').lean();
+      if (mapping && mapping.pipelineId && mapping.pipelineId.isActive) {
+        pipeline      = mapping.pipelineId;
+        stageOverride = mapping.stageId ? String(mapping.stageId) : null;
+        break;
+      }
+    }
+    if (!pipeline) pipeline = await Pipeline.findOne({ tenantId, isDefault: true, isActive: true }).lean();
+    if (!pipeline) pipeline = await Pipeline.findOne({ tenantId, isActive: true }).sort({ createdAt: 1 }).lean();
+    if (!pipeline) return { pipelineId: null, stageId: null };
+
+    const sortedStages = [...(pipeline.stages || [])].sort((a, b) => a.order - b.order);
+    let stage = stageOverride ? sortedStages.find(s => String(s._id) === stageOverride) : null;
+    if (!stage) stage = sortedStages.find(s => s.type === 'open') || sortedStages[0];
+    return { pipelineId: pipeline._id, stageId: stage?._id || null };
+  } catch (e) {
+    console.error('[GSheets Sync] pipeline resolution error:', e.message);
+    return { pipelineId: null, stageId: null };
+  }
+}
 
 // Use refresh_token to get a new access_token from Google
 async function refreshGoogleToken(refreshToken) {
@@ -918,6 +973,7 @@ exports.syncGoogleSheet = async (req, res, next) => {
     }
 
     // Parse headers and build column-index map
+    const originalHeaders = rows[0]; // raw sheet headers (preserve underscores for customFields keys)
     const headers = rows[0].map(normalizeHeader);
     const fieldMap = {}; // { leadField: colIndex } — first matching header wins
     let idColIndex  = -1;
@@ -965,60 +1021,96 @@ exports.syncGoogleSheet = async (req, res, next) => {
         const budgetRaw      = getVal('budget');
         const budget         = budgetRaw ? (parseFloat(budgetRaw.replace(/[^0-9.]/g, '')) || 0) : 0;
 
-        // Unmapped columns → customFields (for reference; not indexed)
+        // Unmapped columns → customFields using ORIGINAL header keys (underscores preserved)
+        // This ensures attribution columns (campaign_name, ad_id, adset_id, etc.) are stored
+        // with underscore keys so extractAttribution-compatible reads work correctly.
         const mappedColIndices = new Set([idColIndex, ...Object.values(fieldMap)].filter(n => n !== -1));
         const customFields = {};
         for (let c = 0; c < headers.length; c++) {
-          if (!mappedColIndices.has(c) && headers[c] && row[c]) {
-            customFields[headers[c]] = String(row[c]).trim();
+          if (!mappedColIndices.has(c) && originalHeaders[c] && row[c]) {
+            // Use original header (e.g. "campaign_name" not "campaign name")
+            const origKey = String(originalHeaders[c]).trim().toLowerCase();
+            customFields[origKey] = String(row[c]).trim();
           }
         }
 
-        // ── Deterministic external key ──────────────────────────────────────
-        const idColVal      = idColIndex !== -1 ? String(row[idColIndex] || '').trim() : '';
-        const externalLeadId = idColVal
-          ? `gsheets:${spreadsheetId}:${sheetName}:ID${idColVal}`
-          : `gsheets:${spreadsheetId}:${sheetName}:R${rowIndex}`;
+        // ── Attribution: promote Meta Ads columns to top-level fields ───────
+        // Mirrors extractAttribution() in gsheetWebhookController
+        const _str = (v) => (v !== undefined && v !== null ? String(v).trim() : null) || null;
+        const attribution = {
+          adId:         _str(customFields.ad_id),
+          adName:       _str(customFields.ad_name),
+          adSetId:      _str(customFields.adset_id),
+          adSetName:    _str(customFields.adset_name),
+          campaignId:   _str(customFields.campaign_id),
+          campaignName: _str(customFields.campaign_name),
+          metaFormId:   _str(customFields.form_id),
+          metaFormName: _str(customFields.form_name),
+          sheetName:    sheetName,
+        };
+
+        // ── Deterministic external key — matches Apps Script webhook format ─
+        // Apps Script sends raw lead_id as externalLeadId; use the same value
+        // so cross-flow dedup (tenantId + externalLeadId) catches duplicates.
+        const idColVal       = idColIndex !== -1 ? String(row[idColIndex] || '').trim() : '';
+        const externalLeadId = idColVal || `gsheets:${sheetName}:R${rowIndex}`;
         const externalSource = 'google_sheets';
 
-        // Step 1 — Primary: exact source key match → skip
+        // ── Source: normalise platform column value ──────────────────────────
+        const source = normaliseSrcGS(getVal('source')); // 'platform' maps to 'source' in GSHEET_HEADER_MAP
+
+        // Step 1 — Primary: exact external key match → skip
         const byKey = await Lead.findOne({ tenantId: tf.tenantId, externalLeadId, externalSource });
         if (byKey) { skipped++; continue; }
 
-        // Step 2 — Secondary: phone match (separate query)
+        // Step 2 — Secondary: phone match
         if (phone) {
           const byPhone = await Lead.findOne({ tenantId: tf.tenantId, phone });
           if (byPhone) {
-            // Link if not already linked to another google_sheets source key
-            if (!byPhone.externalLeadId || byPhone.externalSource !== 'google_sheets') {
+            // Only link if the lead has no existing external key (preserve Apps Script leads)
+            if (!byPhone.externalLeadId) {
               await Lead.updateOne({ _id: byPhone._id }, { $set: { externalLeadId, externalSource } });
             }
             linked++; continue;
           }
         }
 
-        // Step 3 — Tertiary: email match (separate query)
+        // Step 3 — Tertiary: email match
         if (email) {
           const byEmail = await Lead.findOne({ tenantId: tf.tenantId, email });
           if (byEmail) {
-            if (!byEmail.externalLeadId || byEmail.externalSource !== 'google_sheets') {
+            if (!byEmail.externalLeadId) {
               await Lead.updateOne({ _id: byEmail._id }, { $set: { externalLeadId, externalSource } });
             }
             linked++; continue;
           }
         }
 
-        // Step 4 — Create new lead
+        // Step 4 — Pipeline resolution (matches gsheetWebhookController behaviour)
+        const { pipelineId, stageId } = await resolvePipelineGS(tf.tenantId, {
+          adId:       attribution.adId,
+          metaFormId: attribution.metaFormId,
+          sheetName,
+          source,
+        });
+
+        // Step 5 — Create new lead
+        const campaignTag = attribution.campaignName || '';
         await Lead.create({
           name, phone, email, company, city, state, country, industry,
           website, brandName, serviceRequired, budget,
           customFields,
           externalLeadId,
           externalSource,
-          source:    'import',
+          source,
           sheetName,
+          tags: campaignTag ? [`campaign:${campaignTag}`] : [],
           tenantId:  tf.tenantId,
           createdBy: req.user._id,
+          // Top-level attribution (adId, adName, adSetId, adSetName, campaignId, campaignName, metaFormId, metaFormName)
+          ...attribution,
+          // Pipeline assignment
+          ...(pipelineId ? { pipelineId, stageId } : {}),
         });
         created++;
 
