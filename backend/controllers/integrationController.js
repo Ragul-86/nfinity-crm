@@ -695,8 +695,12 @@ exports.getGoogleSheetsPickerConfig = async (req, res, next) => {
   try {
     const tf  = getTenantFilter(req);
     const doc = await Integration.findOne({ ...tf, provider: 'google_sheets' });
+    console.log('[GSheets PickerConfig] doc found:', !!doc, '| status:', doc?.status, '| provider:', doc?.provider, '| tenantId:', doc?.tenantId);
     if (!doc)                      return next(err('Google Sheets is not connected', 404));
-    if (doc.status !== 'connected') return next(err('Google Sheets is not connected', 400));
+    if (doc.status !== 'connected') {
+      console.log('[GSheets PickerConfig] → 400: doc.status is', doc.status, '(not connected)');
+      return next(err('Google Sheets is not connected', 400));
+    }
 
     const apiKey = process.env.GOOGLE_PICKER_API_KEY;
     if (!apiKey) return next(err('GOOGLE_PICKER_API_KEY is not configured on the server', 500));
@@ -729,85 +733,114 @@ exports.getGoogleSheetsPickerConfig = async (req, res, next) => {
 // ─────────────────────────────────────────────────────────────────────────────
 exports.verifySheetAccess = async (req, res, next) => {
   try {
+    // ── DIAGNOSTIC: entry point ───────────────────────────────────────────────
+    console.log('[GSheets Verify] req.user:', JSON.stringify({
+      _id:      req.user?._id,
+      email:    req.user?.email,
+      role:     req.user?.role,
+      tenantId: req.user?.tenantId,
+      isActive: req.user?.isActive,
+    }));
+    console.log('[GSheets Verify] tenantId:', req.user?.tenantId);
+    console.log('[GSheets Verify] body:', req.body);
+
     const tf = getTenantFilter(req);
     const { spreadsheetId } = req.body || {};
-    if (!spreadsheetId) return next(err('spreadsheetId is required'));
 
-    // ── DIAGNOSTIC LOG ────────────────────────────────────────────────────────
-    console.log('[verifySheetAccess] tenantId:', tf.tenantId, '| spreadsheetId:', spreadsheetId);
+    if (!spreadsheetId) {
+      console.log('[GSheets Verify] → 400: spreadsheetId missing from body');
+      return next(err('spreadsheetId is required'));
+    }
 
-    const doc = await Integration.findOne({ ...tf, provider: 'google_sheets' });
+    // ── DIAGNOSTIC: before DB lookup ─────────────────────────────────────────
+    console.log('[GSheets Verify] searching integration:', {
+      tenantId: req.user?.tenantId,
+      provider: 'google_sheets',
+    });
 
-    // ── DIAGNOSTIC LOG ────────────────────────────────────────────────────────
-    console.log('[verifySheetAccess] doc found:', !!doc,
-      '| provider:', doc?.provider,
-      '| status:', doc?.status,
-      '| tenantId match:', String(doc?.tenantId) === String(tf.tenantId));
+    const integration = await Integration.findOne({ ...tf, provider: 'google_sheets' });
 
-    if (!doc) return next(err('Google Sheets is not connected', 404));
+    // ── DIAGNOSTIC: after DB lookup ───────────────────────────────────────────
+    console.log('[GSheets Verify] integration found:', !!integration);
+
+    if (!integration) {
+      console.log('[GSheets Verify] → 404: integration document not found in DB (tenantId/provider mismatch or not created)');
+      return next(err('Google Sheets is not connected', 404));
+    }
+
+    // ── DIAGNOSTIC: safe metadata ─────────────────────────────────────────────
+    console.log('[GSheets Verify] integration metadata:', {
+      id:              integration._id,
+      tenantId:        integration.tenantId,
+      provider:        integration.provider,
+      status:          integration.status,
+      hasCredentials:  !!integration.credentials && Object.keys(integration.credentials).length > 0,
+      hasAccessToken:  !!(integration.credentials?.accessToken),
+      hasRefreshToken: !!(integration.credentials?.refreshToken),
+      configKeys:      Object.keys(integration.config || {}),
+    });
 
     let accessToken;
     try {
-      accessToken = await getOrRefreshToken(doc, tf);
-      console.log('[verifySheetAccess] accessToken obtained (first 12 chars):', accessToken?.slice(0, 12));
+      accessToken = await getOrRefreshToken(integration, tf);
+      console.log('[GSheets Verify] token obtained:', { hasToken: !!accessToken });
     } catch (tokenErr) {
-      console.error('[verifySheetAccess] token error:', tokenErr.message);
+      console.error('[GSheets Verify] token error:', tokenErr.message);
       return next(Object.assign(new Error(tokenErr.message), { statusCode: 401 }));
     }
 
-    // ── Step 1: Verify file access via Drive API (drive.file scope is reliable here) ──
-    // The Sheets API with drive.file scope requires a prior Drive API call to "register"
-    // the file. We verify access and get the filename via Drive API first.
-    const driveRes = await httpGet(
-      `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(spreadsheetId)}?fields=name,mimeType`,
-      { Authorization: `Bearer ${accessToken}` }
-    );
+    // ── Step 1: Verify file access via Drive API ──────────────────────────────
+    // drive.file scope reliably works with Drive API for Picker-selected files.
+    // Calling Drive API first also "registers" the file so Sheets API can access it.
+    const driveUrl = `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(spreadsheetId)}?fields=name,mimeType`;
+    console.log('[GSheets Verify] Drive API call:', driveUrl.replace(/Bearer .+/, 'Bearer [REDACTED]'));
+    const driveRes = await httpGet(driveUrl, { Authorization: `Bearer ${accessToken}` });
+    console.log('[GSheets Verify] Drive API status:', driveRes.status, '| body:', JSON.stringify(driveRes.body).slice(0, 300));
 
-    // ── DIAGNOSTIC LOG ────────────────────────────────────────────────────────
-    console.log('[verifySheetAccess] Drive API status:', driveRes.status,
-      '| body:', JSON.stringify(driveRes.body).slice(0, 300));
-
-    if (driveRes.status === 404) {
-      return next(err('Spreadsheet not found or access was not granted. Please select the file again using the Picker.', 404));
+    if (driveRes.status === 401) {
+      console.log('[GSheets Verify] → 401: Drive API says token is invalid/expired');
+      return next(Object.assign(new Error('Authorization expired. Please reconnect Google Sheets.'), { statusCode: 401 }));
     }
     if (driveRes.status === 403) {
+      console.log('[GSheets Verify] → 403: Drive API denied access. Body:', JSON.stringify(driveRes.body));
       return next(err('Access denied to this file. Please reconnect Google Sheets and re-select the file.', 403));
+    }
+    if (driveRes.status === 404) {
+      console.log('[GSheets Verify] → 404: Drive API says file not found. Picker may have returned wrong ID. Body:', JSON.stringify(driveRes.body));
+      return next(err('Spreadsheet not found or access was not granted by the Picker. Please select the file again.', 404));
     }
     if (driveRes.status !== 200) {
       const detail = driveRes.body?.error?.message || `Drive API error (HTTP ${driveRes.status})`;
-      console.error('[verifySheetAccess] Drive API error:', driveRes.status, detail);
+      console.log('[GSheets Verify] → 502: Drive API unexpected status', driveRes.status, detail);
       return next(err(detail, 502));
     }
 
     const fileName = driveRes.body.name || 'Untitled Spreadsheet';
 
     // ── Step 2: Get sheet tab names via Sheets API ────────────────────────────
-    // After the Drive API call above, the Sheets API should now recognise the file
-    // under drive.file scope. Fall back to ['Sheet1'] if it still refuses.
-    const safePath  = `/spreadsheets/${encodeURIComponent(spreadsheetId)}?fields=sheets.properties`;
-    const sheetsRes = await callSheetsApi(accessToken, safePath);
-
-    // ── DIAGNOSTIC LOG ────────────────────────────────────────────────────────
-    console.log('[verifySheetAccess] Sheets API status:', sheetsRes.status,
-      '| body:', JSON.stringify(sheetsRes.body).slice(0, 300));
+    // After the Drive API call, the Sheets API should recognise the file under drive.file scope.
+    const sheetsPath = `/spreadsheets/${encodeURIComponent(spreadsheetId)}?fields=sheets.properties`;
+    const sheetsRes  = await callSheetsApi(accessToken, sheetsPath);
+    console.log('[GSheets Verify] Sheets API status:', sheetsRes.status, '| body:', JSON.stringify(sheetsRes.body).slice(0, 300));
 
     let availableSheets;
     if (sheetsRes.status === 200) {
-      availableSheets = (sheetsRes.body.sheets || [])
-        .map(s => s.properties?.title)
-        .filter(Boolean);
+      availableSheets = (sheetsRes.body.sheets || []).map(s => s.properties?.title).filter(Boolean);
     } else {
-      // drive.file scope may not grant Sheets API access on first call — use safe fallback
-      console.warn('[verifySheetAccess] Sheets API returned', sheetsRes.status,
-        '— using Sheet1 as fallback. Detail:', JSON.stringify(sheetsRes.body).slice(0, 200));
+      // drive.file scope may not grant Sheets API access even after Drive API call.
+      // Fall back to Sheet1 so the user can still complete the flow.
+      console.warn('[GSheets Verify] Sheets API non-200 — falling back to Sheet1. Status:', sheetsRes.status, JSON.stringify(sheetsRes.body).slice(0, 200));
       availableSheets = ['Sheet1'];
     }
 
     if (!availableSheets.length) availableSheets = ['Sheet1'];
 
-    console.log('[verifySheetAccess] success — fileName:', fileName, '| sheets:', availableSheets);
+    console.log('[GSheets Verify] → 200 success. fileName:', fileName, '| sheets:', availableSheets);
     res.json({ success: true, spreadsheetId, fileName, availableSheets });
-  } catch (e) { next(e); }
+  } catch (e) {
+    console.error('[GSheets Verify] unexpected error:', e.message, e.stack?.split('\n')[1]);
+    next(e);
+  }
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
