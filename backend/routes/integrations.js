@@ -23,6 +23,20 @@ const {
 // Must be registered BEFORE protect middleware, and before the /:provider wildcard.
 router.get('/oauth/:provider/callback', oauthCallback);
 
+// ── TEMPORARY DIAGNOSTIC — remove after confirming route registration ─────────
+// Tests whether this version of integrations.js is actually loaded by Render.
+// Called without auth: GET /api/integrations/google_sheets/debug-routes
+router.get('/google_sheets/debug-routes', (req, res) => {
+  res.json({
+    routeFileLoaded: true,
+    googleSheetsPickerConfig: typeof getGoogleSheetsPickerConfig === 'function',
+    googleSheetsVerify:       typeof verifySheetAccess === 'function',
+    googleSheetsConfig:       typeof saveSheetConfig === 'function',
+    googleSheetsSync:         typeof syncGoogleSheet === 'function',
+    timestamp: new Date().toISOString(),
+  });
+});
+
 // ── All remaining routes require authentication ───────────────────────────────
 router.use(protect);
 

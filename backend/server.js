@@ -296,6 +296,7 @@ app.use('/api/invitations', invitationRoutes);
 app.use('/api/audit', auditRoutes);
 app.use('/api/permissions', permissionRoutes);
 app.use('/api/integrations', integrationRoutes);
+console.log('[STARTUP] integrationRoutes mounted — google_sheets routes loaded:', typeof integrationRoutes === 'function');
 app.use('/api/follow-ups', followUpRoutes);
 app.use('/api/lead-forms', leadFormRoutes);
 app.use('/api/customers', customerRoutes);
