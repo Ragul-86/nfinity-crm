@@ -1,10 +1,10 @@
 /**
  * GoogleSheetsConnectFlow.jsx
  * ─────────────────────────────────────────────────────────────────────────────
- * Two-step connect flow for the google_sheets integration:
- *   Step 1 — OAuth popup (drive.file scope, openid email profile)
+ * Three-step connect flow for the google_sheets integration:
+ *   Step 1 — OAuth popup (drive.file + spreadsheets.readonly scopes)
  *   Step 2 — Google Picker (browser-side file picker, Sheets only)
- *   Step 3 — Tab selection + save
+ *   Step 3 — Sync mode: All Tabs  OR  Specific Tab (with dropdown)
  *
  * Design constraints:
  *  • GOOGLE_CLIENT_SECRET is never sent to the browser.
@@ -87,6 +87,7 @@ export default function GoogleSheetsConnectFlow({ open, onClose, integration }) 
   const [selectedFile,  setSelectedFile]  = useState(integration?.config?.selectedFileName || '')
   const [availableSheets, setAvailableSheets] = useState([])
   const [sheetName,     setSheetName]     = useState(integration?.config?.sheetName || '')
+  const [syncMode,      setSyncMode]      = useState(integration?.config?.syncMode || 'single')
   const [verifyError,   setVerifyError]   = useState('')
 
   // Reset when modal opens/integration changes
@@ -96,6 +97,7 @@ export default function GoogleSheetsConnectFlow({ open, onClose, integration }) 
       setSpreadsheetId(integration?.config?.spreadsheetId || '')
       setSelectedFile(integration?.config?.selectedFileName || '')
       setSheetName(integration?.config?.sheetName || '')
+      setSyncMode(integration?.config?.syncMode || 'single')
       setAvailableSheets([])
       setVerifyError('')
       setLoading(false)
@@ -268,8 +270,13 @@ export default function GoogleSheetsConnectFlow({ open, onClose, integration }) 
 
   // ── Step 3: Save config ───────────────────────────────────────────────────
   const handleSave = () => {
-    if (!sheetName) { toast.error('Please select a sheet tab'); return }
-    saveMutation.mutate({ spreadsheetId, sheetName, selectedFileName: selectedFile })
+    if (syncMode === 'single' && !sheetName) { toast.error('Please select a sheet tab'); return }
+    saveMutation.mutate({
+      spreadsheetId,
+      syncMode,
+      sheetName: syncMode === 'single' ? sheetName : '',
+      selectedFileName: selectedFile,
+    })
   }
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -292,7 +299,7 @@ export default function GoogleSheetsConnectFlow({ open, onClose, integration }) 
           <div className="flex-1 h-px bg-border" />
           <StepDot n={2} label="Select Sheet" active={step === 'picker'}  done={step === 'tab'} />
           <div className="flex-1 h-px bg-border" />
-          <StepDot n={3} label="Choose Tab"   active={step === 'tab'}    done={false} />
+          <StepDot n={3} label="Sync Mode"    active={step === 'tab'}    done={false} />
         </div>
 
         {/* ── Step 1: OAuth ───────────────────────────────────────────────── */}
@@ -325,7 +332,12 @@ export default function GoogleSheetsConnectFlow({ open, onClose, integration }) 
             {hasSheet && (
               <div className="text-xs text-muted-foreground bg-muted/40 rounded-lg px-3 py-2 border border-border">
                 Current: <span className="font-medium text-foreground">{integration.config.selectedFileName}</span>
-                {integration.config.sheetName && <> · tab <span className="font-medium text-foreground">{integration.config.sheetName}</span></>}
+                {integration.config.syncMode === 'all'
+                  ? <> · <span className="font-medium text-foreground">All Tabs</span></>
+                  : integration.config.sheetName
+                    ? <> · tab <span className="font-medium text-foreground">{integration.config.sheetName}</span></>
+                    : null
+                }
               </div>
             )}
             <p className="text-sm text-muted-foreground">
@@ -354,7 +366,7 @@ export default function GoogleSheetsConnectFlow({ open, onClose, integration }) 
           </div>
         )}
 
-        {/* ── Step 3: Tab selection ────────────────────────────────────────── */}
+        {/* ── Step 3: Sync mode selection ──────────────────────────────────── */}
         {step === 'tab' && (
           <div className="space-y-4 pt-1">
             <div className="flex items-center gap-2 text-xs text-emerald-600 bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 rounded-lg px-3 py-2">
@@ -362,25 +374,79 @@ export default function GoogleSheetsConnectFlow({ open, onClose, integration }) 
               Selected: <span className="font-medium ml-1">{selectedFile}</span>
             </div>
 
-            <div className="space-y-1.5">
-              <label className="text-sm font-medium">Sheet Tab</label>
-              <p className="text-xs text-muted-foreground">Choose which tab contains your lead data.</p>
-              {availableSheets.length > 0 ? (
-                <Select value={sheetName} onValueChange={setSheetName}>
-                  <SelectTrigger className="w-full">
-                    <SelectValue placeholder="Select a tab…" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {availableSheets.map(s => (
-                      <SelectItem key={s} value={s}>{s}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              ) : (
-                <div className="text-xs text-muted-foreground bg-muted/40 border border-border rounded-md px-3 py-2">
-                  No tabs found — the sheet may be empty.
+            <div className="space-y-2">
+              <p className="text-sm font-medium">Sync Mode</p>
+
+              {/* All Tabs option */}
+              <label className={cn(
+                'flex items-start gap-3 cursor-pointer rounded-lg border p-3 transition-colors',
+                syncMode === 'all'
+                  ? 'border-primary bg-primary/5'
+                  : 'border-border hover:bg-muted/30'
+              )}>
+                <input
+                  type="radio"
+                  name="syncMode"
+                  value="all"
+                  checked={syncMode === 'all'}
+                  onChange={() => setSyncMode('all')}
+                  className="mt-0.5 accent-primary"
+                />
+                <div>
+                  <div className="text-sm font-medium leading-snug">All Tabs</div>
+                  <div className="text-xs text-muted-foreground mt-0.5">
+                    Sync leads from every tab in this spreadsheet. Each tab is read independently.
+                  </div>
+                  {syncMode === 'all' && availableSheets.length > 0 && (
+                    <div className="text-xs text-muted-foreground mt-1.5">
+                      Tabs: {availableSheets.join(', ')}
+                    </div>
+                  )}
                 </div>
-              )}
+              </label>
+
+              {/* Specific Tab option */}
+              <label className={cn(
+                'flex items-start gap-3 cursor-pointer rounded-lg border p-3 transition-colors',
+                syncMode === 'single'
+                  ? 'border-primary bg-primary/5'
+                  : 'border-border hover:bg-muted/30'
+              )}>
+                <input
+                  type="radio"
+                  name="syncMode"
+                  value="single"
+                  checked={syncMode === 'single'}
+                  onChange={() => setSyncMode('single')}
+                  className="mt-0.5 accent-primary"
+                />
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-medium leading-snug">Specific Tab</div>
+                  <div className="text-xs text-muted-foreground mt-0.5">
+                    Sync leads from one selected tab only.
+                  </div>
+                  {syncMode === 'single' && (
+                    <div className="mt-2" onClick={(e) => e.preventDefault()}>
+                      {availableSheets.length > 0 ? (
+                        <Select value={sheetName} onValueChange={setSheetName}>
+                          <SelectTrigger className="w-full h-8 text-xs">
+                            <SelectValue placeholder="Select a tab…" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {availableSheets.map(s => (
+                              <SelectItem key={s} value={s} className="text-xs">{s}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      ) : (
+                        <div className="text-xs text-muted-foreground bg-muted/40 border border-border rounded-md px-2 py-1.5">
+                          No tabs found — the sheet may be empty.
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </label>
             </div>
 
             <div className="flex gap-2 pt-1">
@@ -390,7 +456,7 @@ export default function GoogleSheetsConnectFlow({ open, onClose, integration }) 
               <Button
                 className="flex-1 gap-1.5"
                 onClick={handleSave}
-                disabled={saveMutation.isPending || !sheetName}
+                disabled={saveMutation.isPending || (syncMode === 'single' && !sheetName)}
               >
                 <RefreshCw className={cn('w-3.5 h-3.5', saveMutation.isPending && 'animate-spin')} />
                 {saveMutation.isPending ? 'Saving…' : 'Save & Connect'}

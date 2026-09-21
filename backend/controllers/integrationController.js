@@ -866,15 +866,17 @@ exports.verifySheetAccess = async (req, res, next) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /api/integrations/google_sheets/config
-// Save the spreadsheetId + sheetName chosen by the user after Picker + tab selection.
-// Body: { spreadsheetId, sheetName, selectedFileName }
+// Save the spreadsheetId + syncMode (+ sheetName if syncMode='single') chosen by the user.
+// Body: { spreadsheetId, syncMode, sheetName, selectedFileName }
 // ─────────────────────────────────────────────────────────────────────────────
 exports.saveSheetConfig = async (req, res, next) => {
   try {
     const tf = getTenantFilter(req);
-    const { spreadsheetId, sheetName, selectedFileName } = req.body || {};
+    const { spreadsheetId, sheetName, selectedFileName, syncMode: rawSyncMode } = req.body || {};
+    const syncMode = rawSyncMode === 'all' ? 'all' : 'single'; // default 'single'
+
     if (!spreadsheetId) return next(err('spreadsheetId is required'));
-    if (!sheetName)     return next(err('sheetName is required'));
+    if (syncMode === 'single' && !sheetName) return next(err('sheetName is required when syncMode is "single"'));
 
     const doc = await Integration.findOne({ ...tf, provider: 'google_sheets' });
     if (!doc) return next(err('Google Sheets is not connected', 404));
@@ -884,7 +886,8 @@ exports.saveSheetConfig = async (req, res, next) => {
       {
         $set: {
           'config.spreadsheetId':    String(spreadsheetId).trim(),
-          'config.sheetName':        String(sheetName).trim(),
+          'config.syncMode':         syncMode,
+          'config.sheetName':        syncMode === 'single' ? String(sheetName).trim() : '',
           'config.selectedFileName': selectedFileName ? String(selectedFileName).trim() : '',
         },
       },
@@ -898,7 +901,7 @@ exports.saveSheetConfig = async (req, res, next) => {
       tenantId:    tf.tenantId,
       resourceId:  'google_sheets',
       resourceType:'integration',
-      details:     { spreadsheetId, sheetName, selectedFileName },
+      details:     { spreadsheetId, syncMode, sheetName: syncMode === 'single' ? sheetName : '(all tabs)', selectedFileName },
       req,
     });
 
@@ -926,9 +929,11 @@ exports.syncGoogleSheet = async (req, res, next) => {
     if (doc.status !== 'connected' && doc.status !== 'sync_error')
       return next(err('Google Sheets is not connected. Please connect first.', 400));
 
-    const { spreadsheetId, sheetName } = doc.config || {};
+    const { spreadsheetId, sheetName, syncMode: configSyncMode } = doc.config || {};
+    const syncMode = configSyncMode === 'all' ? 'all' : 'single'; // default 'single' for backward compat
+
     if (!spreadsheetId) return next(err('No spreadsheet configured. Please select a Google Sheet first.', 400));
-    if (!sheetName)     return next(err('No sheet tab configured. Please select a sheet tab first.', 400));
+    if (syncMode === 'single' && !sheetName) return next(err('No sheet tab configured. Please select a sheet tab first.', 400));
 
     // Get a valid access token (auto-refresh if expired)
     let accessToken;
@@ -942,186 +947,210 @@ exports.syncGoogleSheet = async (req, res, next) => {
       return next(Object.assign(new Error(tokenErr.message), { statusCode: 401 }));
     }
 
-    // Fetch up to 1000 rows (A1:Z1000) — sufficient for most sheets
-    const range    = encodeURIComponent(`${sheetName}!A1:Z1000`);
-    const sheetsRes = await callSheetsApi(accessToken, `/spreadsheets/${spreadsheetId}/values/${range}`);
-
-    if (sheetsRes.status === 401) {
-      await Integration.findOneAndUpdate(
-        { ...tf, provider: 'google_sheets' },
-        { $set: { status: 'expired', 'syncSettings.lastSyncStatus': 'failed', 'syncSettings.lastSyncError': 'Authorization expired' } }
-      );
-      return next(err('Google authorization expired. Please reconnect.', 401));
-    }
-    if (sheetsRes.status !== 200) {
-      const errMsg = sheetsRes.body?.error?.message || `Sheets API error (HTTP ${sheetsRes.status})`;
-      await Integration.findOneAndUpdate(
-        { ...tf, provider: 'google_sheets' },
-        { $set: { status: 'sync_error', 'syncSettings.lastSyncStatus': 'failed', 'syncSettings.lastSyncError': errMsg } }
-      );
-      return next(err(errMsg, 502));
-    }
-
-    const rows = sheetsRes.body.values || [];
-    if (rows.length < 2) {
-      const now = new Date();
-      await Integration.findOneAndUpdate(
-        { ...tf, provider: 'google_sheets' },
-        { $set: { 'syncSettings.lastSync': now, 'syncSettings.lastSyncStatus': 'success', 'syncSettings.lastSyncError': null } }
-      );
-      return res.json({ success: true, created: 0, skipped: 0, linked: 0, errors: [], message: 'No data rows found in the sheet.' });
-    }
-
-    // Parse headers and build column-index map
-    const originalHeaders = rows[0]; // raw sheet headers (preserve underscores for customFields keys)
-    const headers = rows[0].map(normalizeHeader);
-    const fieldMap = {}; // { leadField: colIndex } — first matching header wins
-    let idColIndex  = -1;
-
-    for (let c = 0; c < headers.length; c++) {
-      const h = headers[c];
-      if (GSHEET_ID_HEADERS.has(h)) {
-        if (idColIndex === -1) idColIndex = c; // first ID column wins
-      } else if (GSHEET_HEADER_MAP[h] && fieldMap[GSHEET_HEADER_MAP[h]] === undefined) {
-        fieldMap[GSHEET_HEADER_MAP[h]] = c;
+    // ── Determine which tabs to sync ─────────────────────────────────────────
+    let tabsToSync = [];
+    if (syncMode === 'all') {
+      // Fetch spreadsheet metadata to get all tab names
+      const metaRes = await callSheetsApi(accessToken, `/spreadsheets/${spreadsheetId}?fields=sheets.properties.title`);
+      if (metaRes.status === 401) {
+        await Integration.findOneAndUpdate(
+          { ...tf, provider: 'google_sheets' },
+          { $set: { status: 'expired', 'syncSettings.lastSyncStatus': 'failed', 'syncSettings.lastSyncError': 'Authorization expired' } }
+        );
+        return next(err('Google authorization expired. Please reconnect.', 401));
       }
-    }
-
-    if (fieldMap.name === undefined) {
-      return next(err('Sheet must have a "Name" column. Please check the header row.', 400));
+      if (metaRes.status !== 200) {
+        const errMsg = metaRes.body?.error?.message || `Sheets API error (HTTP ${metaRes.status})`;
+        await Integration.findOneAndUpdate(
+          { ...tf, provider: 'google_sheets' },
+          { $set: { status: 'sync_error', 'syncSettings.lastSyncStatus': 'failed', 'syncSettings.lastSyncError': errMsg } }
+        );
+        return next(err(errMsg, 502));
+      }
+      tabsToSync = (metaRes.body.sheets || []).map(s => s.properties?.title).filter(Boolean);
+      if (!tabsToSync.length) {
+        await Integration.findOneAndUpdate(
+          { ...tf, provider: 'google_sheets' },
+          { $set: { 'syncSettings.lastSync': new Date(), 'syncSettings.lastSyncStatus': 'success', 'syncSettings.lastSyncError': null } }
+        );
+        return res.json({ success: true, created: 0, skipped: 0, linked: 0, errors: [], message: 'No tabs found in the spreadsheet.' });
+      }
+    } else {
+      tabsToSync = [sheetName];
     }
 
     const Lead = require('../models/Lead');
     let created = 0, skipped = 0, linked = 0;
     const errors = [];
 
-    for (let i = 1; i < rows.length; i++) {
-      const row      = rows[i];
-      const rowIndex = i + 1; // 1-based; row 1 = header, row 2 = first data row
+    // ── Process each tab (one iteration for 'single', all tabs for 'all') ───
+    for (const tabName of tabsToSync) {
+      // Fetch up to 1000 rows for this tab
+      const range     = encodeURIComponent(`${tabName}!A1:Z1000`);
+      const sheetsRes = await callSheetsApi(accessToken, `/spreadsheets/${spreadsheetId}/values/${range}`);
 
-      try {
-        const getVal = (field) => {
-          const idx = fieldMap[field];
-          return idx !== undefined ? String(row[idx] || '').trim() : '';
-        };
-
-        const name = getVal('name');
-        if (!name) continue; // Skip rows without a name
-
-        const phone          = getVal('phone');
-        const email          = getVal('email');
-        const company        = getVal('company');
-        const city           = getVal('city');
-        const state          = getVal('state');
-        const country        = getVal('country');
-        const industry       = getVal('industry');
-        const website        = getVal('website');
-        const brandName      = getVal('brandName');
-        const serviceRequired = getVal('serviceRequired');
-        const budgetRaw      = getVal('budget');
-        const budget         = budgetRaw ? (parseFloat(budgetRaw.replace(/[^0-9.]/g, '')) || 0) : 0;
-
-        // Unmapped columns → customFields using ORIGINAL header keys (underscores preserved)
-        // This ensures attribution columns (campaign_name, ad_id, adset_id, etc.) are stored
-        // with underscore keys so extractAttribution-compatible reads work correctly.
-        const mappedColIndices = new Set([idColIndex, ...Object.values(fieldMap)].filter(n => n !== -1));
-        const customFields = {};
-        for (let c = 0; c < headers.length; c++) {
-          if (!mappedColIndices.has(c) && originalHeaders[c] && row[c]) {
-            // Use original header (e.g. "campaign_name" not "campaign name")
-            const origKey = String(originalHeaders[c]).trim().toLowerCase();
-            customFields[origKey] = String(row[c]).trim();
-          }
-        }
-
-        // ── Attribution: promote Meta Ads columns to top-level fields ───────
-        // Mirrors extractAttribution() in gsheetWebhookController
-        const _str = (v) => (v !== undefined && v !== null ? String(v).trim() : null) || null;
-        const attribution = {
-          adId:         _str(customFields.ad_id),
-          adName:       _str(customFields.ad_name),
-          adSetId:      _str(customFields.adset_id),
-          adSetName:    _str(customFields.adset_name),
-          campaignId:   _str(customFields.campaign_id),
-          campaignName: _str(customFields.campaign_name),
-          metaFormId:   _str(customFields.form_id),
-          metaFormName: _str(customFields.form_name),
-          sheetName:    sheetName,
-        };
-
-        // ── Deterministic external key — matches Apps Script webhook format ─
-        // Apps Script sends raw lead_id as externalLeadId; use the same value
-        // so cross-flow dedup (tenantId + externalLeadId) catches duplicates.
-        const idColVal       = idColIndex !== -1 ? String(row[idColIndex] || '').trim() : '';
-        const externalLeadId = idColVal || `gsheets:${sheetName}:R${rowIndex}`;
-        const externalSource = 'google_sheets';
-
-        // ── Source: normalise platform column value ──────────────────────────
-        const source = normaliseSrcGS(getVal('source')); // 'platform' maps to 'source' in GSHEET_HEADER_MAP
-
-        // Step 1 — Primary: exact external key match → skip
-        const byKey = await Lead.findOne({ tenantId: tf.tenantId, externalLeadId, externalSource });
-        if (byKey) { skipped++; continue; }
-
-        // Step 2 — Secondary: phone match
-        if (phone) {
-          const byPhone = await Lead.findOne({ tenantId: tf.tenantId, phone });
-          if (byPhone) {
-            // Only link if the lead has no existing external key (preserve Apps Script leads)
-            if (!byPhone.externalLeadId) {
-              await Lead.updateOne({ _id: byPhone._id }, { $set: { externalLeadId, externalSource } });
-            }
-            linked++; continue;
-          }
-        }
-
-        // Step 3 — Tertiary: email match
-        if (email) {
-          const byEmail = await Lead.findOne({ tenantId: tf.tenantId, email });
-          if (byEmail) {
-            if (!byEmail.externalLeadId) {
-              await Lead.updateOne({ _id: byEmail._id }, { $set: { externalLeadId, externalSource } });
-            }
-            linked++; continue;
-          }
-        }
-
-        // Step 4 — Pipeline resolution (matches gsheetWebhookController behaviour)
-        const { pipelineId, stageId } = await resolvePipelineGS(tf.tenantId, {
-          adId:       attribution.adId,
-          metaFormId: attribution.metaFormId,
-          sheetName,
-          source,
-        });
-
-        // Step 5 — Create new lead
-        const campaignTag = attribution.campaignName || '';
-        await Lead.create({
-          name, phone, email, company, city, state, country, industry,
-          website, brandName, serviceRequired, budget,
-          customFields,
-          externalLeadId,
-          externalSource,
-          source,
-          sheetName,
-          tags: campaignTag ? [`campaign:${campaignTag}`] : [],
-          tenantId:  tf.tenantId,
-          createdBy: req.user._id,
-          // Top-level attribution (adId, adName, adSetId, adSetName, campaignId, campaignName, metaFormId, metaFormName)
-          ...attribution,
-          // Pipeline assignment
-          ...(pipelineId ? { pipelineId, stageId } : {}),
-        });
-        created++;
-
-      } catch (rowErr) {
-        errors.push({ row: rowIndex, reason: rowErr.message });
+      if (sheetsRes.status === 401) {
+        // Auth expired — stop all syncing, mark integration expired
+        await Integration.findOneAndUpdate(
+          { ...tf, provider: 'google_sheets' },
+          { $set: { status: 'expired', 'syncSettings.lastSyncStatus': 'failed', 'syncSettings.lastSyncError': 'Authorization expired' } }
+        );
+        return next(err('Google authorization expired. Please reconnect.', 401));
       }
+      if (sheetsRes.status !== 200) {
+        // Non-fatal per-tab error — record and continue to next tab
+        const errMsg = sheetsRes.body?.error?.message || `Sheets API error (HTTP ${sheetsRes.status})`;
+        errors.push({ tab: tabName, reason: errMsg });
+        continue;
+      }
+
+      const rows = sheetsRes.body.values || [];
+      if (rows.length < 2) continue; // empty or header-only tab — skip
+
+      // Parse headers for this tab
+      const originalHeaders = rows[0]; // raw sheet headers (preserve underscores for customFields keys)
+      const headers         = rows[0].map(normalizeHeader);
+      const fieldMap        = {};
+      let idColIndex        = -1;
+
+      for (let c = 0; c < headers.length; c++) {
+        const h = headers[c];
+        if (GSHEET_ID_HEADERS.has(h)) {
+          if (idColIndex === -1) idColIndex = c;
+        } else if (GSHEET_HEADER_MAP[h] && fieldMap[GSHEET_HEADER_MAP[h]] === undefined) {
+          fieldMap[GSHEET_HEADER_MAP[h]] = c;
+        }
+      }
+
+      if (fieldMap.name === undefined) {
+        // Tab has no Name column — skip with a note
+        errors.push({ tab: tabName, reason: 'No "Name" column found — tab skipped' });
+        continue;
+      }
+
+      // ── Row loop ─────────────────────────────────────────────────────────
+      for (let i = 1; i < rows.length; i++) {
+        const row      = rows[i];
+        const rowIndex = i + 1; // 1-based; row 1 = header
+
+        try {
+          const getVal = (field) => {
+            const idx = fieldMap[field];
+            return idx !== undefined ? String(row[idx] || '').trim() : '';
+          };
+
+          const name = getVal('name');
+          if (!name) continue; // Skip rows without a name
+
+          const phone           = getVal('phone');
+          const email           = getVal('email');
+          const company         = getVal('company');
+          const city            = getVal('city');
+          const state           = getVal('state');
+          const country         = getVal('country');
+          const industry        = getVal('industry');
+          const website         = getVal('website');
+          const brandName       = getVal('brandName');
+          const serviceRequired = getVal('serviceRequired');
+          const budgetRaw       = getVal('budget');
+          const budget          = budgetRaw ? (parseFloat(budgetRaw.replace(/[^0-9.]/g, '')) || 0) : 0;
+
+          // Unmapped columns → customFields using ORIGINAL header keys (underscores preserved)
+          const mappedColIndices = new Set([idColIndex, ...Object.values(fieldMap)].filter(n => n !== -1));
+          const customFields = {};
+          for (let c = 0; c < headers.length; c++) {
+            if (!mappedColIndices.has(c) && originalHeaders[c] && row[c]) {
+              const origKey = String(originalHeaders[c]).trim().toLowerCase();
+              customFields[origKey] = String(row[c]).trim();
+            }
+          }
+
+          // ── Attribution: promote Meta Ads columns to top-level fields ────
+          const _str = (v) => (v !== undefined && v !== null ? String(v).trim() : null) || null;
+          const attribution = {
+            adId:         _str(customFields.ad_id),
+            adName:       _str(customFields.ad_name),
+            adSetId:      _str(customFields.adset_id),
+            adSetName:    _str(customFields.adset_name),
+            campaignId:   _str(customFields.campaign_id),
+            campaignName: _str(customFields.campaign_name),
+            metaFormId:   _str(customFields.form_id),
+            metaFormName: _str(customFields.form_name),
+            sheetName:    tabName,  // actual tab name for this row
+          };
+
+          // ── Deterministic external key — raw id matches Apps Script format ─
+          const idColVal       = idColIndex !== -1 ? String(row[idColIndex] || '').trim() : '';
+          const externalLeadId = idColVal || `gsheets:${tabName}:R${rowIndex}`;
+          const externalSource = 'google_sheets';
+
+          // ── Source: normalise platform column value ───────────────────────
+          const source = normaliseSrcGS(getVal('source')); // 'platform' → 'source' via GSHEET_HEADER_MAP
+
+          // Step 1 — Primary: exact external key match → skip
+          const byKey = await Lead.findOne({ tenantId: tf.tenantId, externalLeadId, externalSource });
+          if (byKey) { skipped++; continue; }
+
+          // Step 2 — Secondary: phone match
+          if (phone) {
+            const byPhone = await Lead.findOne({ tenantId: tf.tenantId, phone });
+            if (byPhone) {
+              // Only link if no existing external key (preserve Apps Script leads)
+              if (!byPhone.externalLeadId) {
+                await Lead.updateOne({ _id: byPhone._id }, { $set: { externalLeadId, externalSource } });
+              }
+              linked++; continue;
+            }
+          }
+
+          // Step 3 — Tertiary: email match
+          if (email) {
+            const byEmail = await Lead.findOne({ tenantId: tf.tenantId, email });
+            if (byEmail) {
+              if (!byEmail.externalLeadId) {
+                await Lead.updateOne({ _id: byEmail._id }, { $set: { externalLeadId, externalSource } });
+              }
+              linked++; continue;
+            }
+          }
+
+          // Step 4 — Pipeline resolution
+          const { pipelineId, stageId } = await resolvePipelineGS(tf.tenantId, {
+            adId:       attribution.adId,
+            metaFormId: attribution.metaFormId,
+            sheetName:  tabName,
+            source,
+          });
+
+          // Step 5 — Create new lead
+          const campaignTag = attribution.campaignName || '';
+          await Lead.create({
+            name, phone, email, company, city, state, country, industry,
+            website, brandName, serviceRequired, budget,
+            customFields,
+            externalLeadId,
+            externalSource,
+            source,
+            sheetName: tabName,
+            tags: campaignTag ? [`campaign:${campaignTag}`] : [],
+            tenantId:  tf.tenantId,
+            createdBy: req.user._id,
+            ...attribution,
+            ...(pipelineId ? { pipelineId, stageId } : {}),
+          });
+          created++;
+
+        } catch (rowErr) {
+          errors.push({ tab: tabName, row: rowIndex, reason: rowErr.message });
+        }
+      }
+      // ── end row loop for tabName ──────────────────────────────────────────
     }
+    // ── end tab loop ─────────────────────────────────────────────────────────
 
     // Persist sync result
     const now = new Date();
-    const syncErrMsg = errors.length ? `${errors.length} row(s) failed — check errors` : null;
+    const syncErrMsg = errors.length ? `${errors.length} item(s) failed — check errors` : null;
     await Integration.findOneAndUpdate(
       { ...tf, provider: 'google_sheets' },
       {
@@ -1141,7 +1170,7 @@ exports.syncGoogleSheet = async (req, res, next) => {
       tenantId:    tf.tenantId,
       resourceId:  'google_sheets',
       resourceType:'integration',
-      details:     { spreadsheetId, sheetName, created, skipped, linked, errors: errors.length },
+      details:     { spreadsheetId, syncMode, tabs: tabsToSync, created, skipped, linked, errors: errors.length },
       req,
     });
 
