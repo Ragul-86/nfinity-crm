@@ -5,7 +5,7 @@ import {
   CheckSquare, Building2, BarChart3, Settings, ChevronLeft,
   ChevronRight, Zap, UserCog, Clock, Briefcase, X,
   Globe, Shield, Plug2, Users, FileText, IndianRupee, Layers,
-  ScrollText, Activity,
+  ScrollText, Activity, Antenna,
 } from 'lucide-react'
 import { cn } from '@/utils/cn'
 import { useAuth } from '@/contexts/AuthContext'
@@ -13,9 +13,10 @@ import { useAuth } from '@/contexts/AuthContext'
 // ── Tenant workspace nav (all roles except platform_super_admin) ──────────────
 const TENANT_NAV = [
   { label: 'Dashboard',        icon: LayoutDashboard, href: '/',             minRole: 'employee' },
-  { label: 'Sales Pipeline',   icon: KanbanSquare,    href: '/pipeline',     minRole: 'manager' },
-  { label: 'Leads',            icon: Users,           href: '/crm-leads',    minRole: 'employee' },
-  { label: 'Lead Forms',       icon: FileText,        href: '/lead-forms',   minRole: 'manager' },
+  { label: 'Sales Pipeline',   icon: KanbanSquare,    href: '/pipeline',          minRole: 'manager' },
+  { label: 'Leads',            icon: Users,           href: '/crm-leads',         minRole: 'employee' },
+  { label: 'Lead Sources',     icon: Antenna,         href: '/leads/sources',     minRole: 'manager' },
+  { label: 'Lead Forms',       icon: FileText,        href: '/lead-forms',        minRole: 'manager' },
   { label: 'Meta Leads',       icon: Zap,             href: '/leads',        minRole: 'manager' },
   { label: 'Clients',          icon: Building2,       href: '/clients',      minRole: 'manager' },
   { label: 'Finance',          icon: IndianRupee,     href: '/finance',      minRole: 'manager' },

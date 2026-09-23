@@ -197,26 +197,50 @@ exports.deleteNote = async (req, res, next) => {
 };
 
 // ── GET /api/leads/stats ───────────────────────────────────────────────────────
+// Supports optional stream filter query params:
+//   metaFormId, sheetName, source, campaignId, externalSource
+// When supplied, stats are scoped to that source stream.
+// When absent, returns tenant-wide stats (existing behaviour unchanged).
 exports.getLeadStats = async (req, res, next) => {
   try {
     const tf = getTenantFilter(req);
     if (req.user.role === 'employee') tf.assignedTo = req.user.id;
 
+    // Optional stream-scoped filter — AND'd on top of tenantId
+    const streamFilter = {};
+    if (req.query.metaFormId)     streamFilter.metaFormId = req.query.metaFormId;
+    if (req.query.sheetName)      streamFilter.sheetName  = req.query.sheetName;
+    if (req.query.source)         streamFilter.source     = req.query.source;
+    if (req.query.campaignId)     streamFilter.campaignId = req.query.campaignId;
+    if (req.query.externalSource) {
+      // 'all_sheets' is a frontend convenience value meaning both integrations
+      if (req.query.externalSource === 'all_sheets') {
+        streamFilter.externalSource = { $in: ['google_sheet', 'google_sheets'] };
+      } else {
+        streamFilter.externalSource = req.query.externalSource;
+      }
+    } else if (req.query.sheetName) {
+      // When filtering by sheetName only, include leads from both sheet integrations
+      streamFilter.externalSource = { $in: ['google_sheet', 'google_sheets'] };
+    }
+
+    const matchFilter = { ...tf, ...streamFilter };
+
     const [byStatus, bySource, byPriority, totalValue] = await Promise.all([
       Lead.aggregate([
-        { $match: tf },
+        { $match: matchFilter },
         { $group: { _id: '$status', count: { $sum: 1 }, value: { $sum: '$value' } } },
       ]),
       Lead.aggregate([
-        { $match: tf },
+        { $match: matchFilter },
         { $group: { _id: '$source', count: { $sum: 1 } } },
       ]),
       Lead.aggregate([
-        { $match: tf },
+        { $match: matchFilter },
         { $group: { _id: '$priority', count: { $sum: 1 } } },
       ]),
       Lead.aggregate([
-        { $match: tf },
+        { $match: matchFilter },
         { $group: { _id: null, total: { $sum: '$value' }, count: { $sum: 1 } } },
       ]),
     ]);

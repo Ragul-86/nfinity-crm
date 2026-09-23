@@ -1,8 +1,10 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useSearchParams, Link } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Card, CardContent } from '@/components/ui/card'
+import { Badge } from '@/components/ui/badge'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
 import { Label } from '@/components/ui/label'
@@ -16,7 +18,7 @@ import { toast } from 'react-hot-toast'
 import {
   Plus, Search, Download, Upload, MoreVertical, Trash2,
   Archive, X, ChevronLeft, ChevronRight, Eye, AlertCircle,
-  Calendar, GitBranch,
+  Calendar, GitBranch, ArrowLeft, BarChart3,
 } from 'lucide-react'
 import { cn } from '@/utils/cn'
 import { format } from 'date-fns'
@@ -306,6 +308,7 @@ function ImportDialog({ open, onClose }) {
 export default function Leads() {
   const { user } = useAuth()
   const qc = useQueryClient()
+  const [searchParams] = useSearchParams()
   const [page, setPage] = useState(1)
   const [search, setSearch] = useState('')
   const [filters, setFilters] = useState({ status: '', priority: '', source: '', adId: '', pipelineId: '', stageId: '' })
@@ -317,15 +320,30 @@ export default function Leads() {
   const isManager = ['super_admin', 'admin', 'manager'].includes(user?.role)
   const LIMIT = 20
 
+  // ── Stream context from URL (set when navigating from LeadSources) ──────────
+  const streamName   = searchParams.get('streamName') || ''
+  const streamType   = searchParams.get('streamType') || ''
+  const metaFormId   = searchParams.get('metaFormId') || ''
+  const sheetName    = searchParams.get('sheetName') || ''
+  const streamSource = searchParams.get('source') || ''
+  const campaignId   = searchParams.get('campaignId') || ''
+
+  // If stream context present, lock the source filter to the stream's source
+  const effectiveSource = streamSource || filters.source
+
   const qp = new URLSearchParams({
     page, limit: LIMIT,
     ...(search               && { search }),
     ...(filters.status       && { status: filters.status }),
     ...(filters.priority     && { priority: filters.priority }),
-    ...(filters.source       && { source: filters.source }),
+    ...(effectiveSource      && { source: effectiveSource }),
     ...(filters.adId         && { adId: filters.adId }),
     ...(filters.pipelineId   && { pipelineId: filters.pipelineId }),
     ...(filters.stageId      && { stageId: filters.stageId }),
+    // Stream filters
+    ...(metaFormId           && { metaFormId }),
+    ...(sheetName            && { sheetName }),
+    ...(campaignId           && { campaignId }),
   }).toString()
 
   const { data: leadsData, isLoading } = useQuery({
@@ -335,9 +353,19 @@ export default function Leads() {
     refetchInterval: 30000,
   })
 
+  // Build stream filter params for stats — when in stream context, stats reflect the stream
+  const statsQp = useMemo(() => {
+    const p = new URLSearchParams()
+    if (metaFormId)   p.set('metaFormId', metaFormId)
+    if (sheetName)    p.set('sheetName', sheetName)
+    if (streamSource) p.set('source', streamSource)
+    if (campaignId)   p.set('campaignId', campaignId)
+    return p.toString()
+  }, [metaFormId, sheetName, streamSource, campaignId])
+
   const { data: statsData } = useQuery({
-    queryKey: ['lead-stats'],
-    queryFn: () => apiFetch('/api/leads/stats').then(d => d.data),
+    queryKey: ['lead-stats', statsQp],
+    queryFn: () => apiFetch(`/api/leads/stats${statsQp ? '?' + statsQp : ''}`).then(d => d.data),
     refetchInterval: 60000,
   })
 
@@ -393,10 +421,29 @@ export default function Leads() {
 
   return (
     <div className="p-4 sm:p-6 space-y-5">
+      {/* Stream context breadcrumb — only shown when opened from Lead Sources */}
+      {streamName && (
+        <div className="flex items-center gap-2 flex-wrap">
+          <Link
+            to="/leads/sources"
+            className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
+          >
+            <ArrowLeft className="w-3.5 h-3.5" />
+            Lead Sources
+          </Link>
+          <span className="text-muted-foreground/50">›</span>
+          <div className="flex items-center gap-2">
+            <BarChart3 className="w-3.5 h-3.5 text-primary" />
+            <span className="text-sm font-medium">{streamName}</span>
+            <Badge variant="secondary" className="text-xs">filtered view</Badge>
+          </div>
+        </div>
+      )}
+
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
-          <h1 className="text-xl font-bold">Leads</h1>
+          <h1 className="text-xl font-bold">{streamName ? `${streamName} — Leads` : 'Leads'}</h1>
           <p className="text-sm text-muted-foreground">{total} total lead{total !== 1 ? 's' : ''}</p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">

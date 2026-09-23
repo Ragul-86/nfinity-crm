@@ -36,6 +36,7 @@ const CreditNote = require('./models/CreditNote');
 const DebitNote  = require('./models/DebitNote');
 const Pipeline        = require('./models/Pipeline');
 const PipelineMapping = require('./models/PipelineMapping');
+const LeadStream      = require('./models/LeadStream');
 const { seedSOPTemplates } = require('./utils/sopTemplatesData');
 
 // Routes
@@ -71,6 +72,7 @@ const clientPortalRoutes = require('./routes/clientPortal');
 const systemHealthRoutes    = require('./routes/systemHealth');
 const gsheetWebhookRoutes   = require('./routes/gsheetWebhook');
 const pipelineDefRoutes     = require('./routes/pipelineDefs');
+const leadStreamRoutes      = require('./routes/leadStreams');
 
 const app = express();
 
@@ -135,7 +137,7 @@ connectDB().then(async () => {
 
     // ── 4. Backfill all data records without tenantId ─────────────────────────
     const tid = defaultTenant._id;
-    const MODELS_TO_BACKFILL = [Lead, Client, Campaign, Task, Project, Attendance, Leave, Notification, MetaLead, FollowUp, LeadActivity, LeadForm, LeadFormSubmission, Invoice, Quotation, ClientNote, Meeting, ClientActivity, ClientFile, Payment, CreditNote, DebitNote];
+    const MODELS_TO_BACKFILL = [Lead, Client, Campaign, Task, Project, Attendance, Leave, Notification, MetaLead, FollowUp, LeadActivity, LeadForm, LeadFormSubmission, Invoice, Quotation, ClientNote, Meeting, ClientActivity, ClientFile, Payment, CreditNote, DebitNote, LeadStream];
     const backfillResults = await Promise.all(
       MODELS_TO_BACKFILL.map(Model =>
         Model.updateMany({ tenantId: { $exists: false } }, { $set: { tenantId: tid } })
@@ -311,6 +313,8 @@ app.use('/api/health',         systemHealthRoutes);
 app.use('/api/gsheet-webhook', gsheetWebhookRoutes);
 // Flexible pipeline definitions (tenant-scoped, requires auth)
 app.use('/api/pipeline-defs', pipelineDefRoutes);
+// Lead Source Stream dashboards (tenant-scoped, requires auth)
+app.use('/api/lead-streams', leadStreamRoutes);
 
 // 404 handler
 app.use('*', (req, res) => res.status(404).json({ success: false, message: `Route ${req.originalUrl} not found` }));
