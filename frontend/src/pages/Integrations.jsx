@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { useSearchParams } from 'react-router-dom'
+import { useSearchParams, useNavigate } from 'react-router-dom'
 import { RefreshCcw, Search, PlugZap, ShieldAlert } from 'lucide-react'
 import toast from 'react-hot-toast'
 import api from '@/services/api'
@@ -43,9 +43,17 @@ function AccessDeniedInline() {
 }
 
 // ── Main page ────────────────────────────────────────────────────────────────
+// Map provider IDs to their lead source stream URL
+// Only providers that create CRM leads in the Lead collection are listed here.
+const LEAD_SOURCE_DASHBOARD_MAP = {
+  meta_ads:  (info) => `/leads/sources/source/meta_ads?name=Meta+Leads&source=meta_ads`,
+  // google_sheets handled inside GoogleSheetsConnectFlow itself (has sheetName in state)
+}
+
 export default function Integrations() {
   const { user } = useAuth()
   const [searchParams, setSearchParams] = useSearchParams()
+  const navigate = useNavigate()
   const qc = useQueryClient()
 
   const canAccess = ['platform_super_admin', 'client_super_admin', 'super_admin'].includes(user?.role)
@@ -134,6 +142,16 @@ export default function Integrations() {
       setTestingId(null)
     },
   })
+
+  // Called by ConnectModal after a successful connection.
+  // Navigates to the source-specific dashboard for lead-generating integrations.
+  const handleConnected = ({ provider }) => {
+    const buildUrl = LEAD_SOURCE_DASHBOARD_MAP[provider]
+    if (buildUrl) {
+      // Small delay so the modal can close and the toast can appear first
+      setTimeout(() => navigate(buildUrl({ provider })), 400)
+    }
+  }
 
   const handleConnect = (config, integration) => {
     // google_sheets uses its own two-step OAuth + Picker flow
@@ -297,6 +315,7 @@ export default function Integrations() {
         onClose={() => { setConnectModalConfig(null); setConnectModalIntegration(null) }}
         config={connectModalConfig}
         integration={connectModalIntegration}
+        onConnected={handleConnected}
       />
 
       {/* Google Sheets OAuth + Picker two-step flow */}

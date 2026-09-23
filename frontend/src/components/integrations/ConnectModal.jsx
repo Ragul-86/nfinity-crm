@@ -136,7 +136,9 @@ function FieldRenderer({ field, value, onChange, readOnly }) {
 }
 
 // ── Main ConnectModal ────────────────────────────────────────────────────────
-export default function ConnectModal({ open, onClose, config, integration }) {
+// onConnected({ provider, displayName }) — optional callback fired after a
+// successful connection, before onClose(). Used for "Go to Dashboard" navigation.
+export default function ConnectModal({ open, onClose, config, integration, onConnected }) {
   const qc = useQueryClient()
   const isConnected = integration?.status === 'connected'
 
@@ -175,6 +177,8 @@ export default function ConnectModal({ open, onClose, config, integration }) {
     onSuccess: (data) => {
       toast.success(data.message || `${config.name} connected successfully`)
       qc.invalidateQueries(['integrations'])
+      // Fire onConnected so the parent can deep-link to the right dashboard
+      onConnected?.({ provider: config.id, displayName: config.name })
       onClose()
     },
     onError: (err) => toast.error(err?.response?.data?.message || 'Connection failed'),
@@ -250,6 +254,8 @@ export default function ConnectModal({ open, onClose, config, integration }) {
           onClose()
           if (event.data.success) {
             toast.success(`${config.name} connected successfully`)
+            // Fire onConnected so parent can navigate to the source dashboard
+            onConnected?.({ provider: config.id, displayName: config.name })
           } else {
             toast.error(`Connection failed: ${event.data.reason || 'Unknown error'}`)
           }

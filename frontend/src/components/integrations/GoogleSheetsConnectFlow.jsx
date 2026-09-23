@@ -15,7 +15,8 @@
 
 import React, { useState, useEffect, useCallback } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { ExternalLink, FolderOpen, RefreshCw, CheckCircle2, AlertTriangle } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
+import { ExternalLink, FolderOpen, RefreshCw, CheckCircle2, AlertTriangle, BarChart3 } from 'lucide-react'
 import toast from 'react-hot-toast'
 import api from '@/services/api'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -72,6 +73,7 @@ function StepDot({ n, label, active, done }) {
 // ── Main component ────────────────────────────────────────────────────────────
 export default function GoogleSheetsConnectFlow({ open, onClose, integration }) {
   const qc = useQueryClient()
+  const navigate = useNavigate()
 
   const isAlreadyConnected = integration?.status === 'connected'
   const hasSheet           = !!(integration?.config?.spreadsheetId)
@@ -110,7 +112,8 @@ export default function GoogleSheetsConnectFlow({ open, onClose, integration }) 
     onSuccess: () => {
       toast.success('Google Sheet connected successfully')
       qc.invalidateQueries(['integrations'])
-      onClose()
+      // Advance to the "Connection Complete" screen instead of closing immediately
+      setStep('complete')
     },
     onError: (e) => toast.error(e?.response?.data?.message || 'Failed to save sheet configuration'),
   })
@@ -464,6 +467,64 @@ export default function GoogleSheetsConnectFlow({ open, onClose, integration }) 
             </div>
           </div>
         )}
+
+        {/* ── Step 4: Connection Complete ───────────────────────────────── */}
+        {step === 'complete' && (() => {
+          // Build the deep-link URL for this specific sheet / tab dashboard
+          const dashName  = syncMode === 'single' ? sheetName : selectedFile
+          const streamKey = encodeURIComponent(dashName)
+          const params    = new URLSearchParams({ name: dashName })
+          if (syncMode === 'single' && sheetName) params.set('sheetName', sheetName)
+          const dashUrl = `/leads/sources/sheet_tab/${streamKey}?${params}`
+
+          return (
+            <div className="space-y-5 pt-1 text-center">
+              <div className="flex flex-col items-center gap-2">
+                <div className="w-14 h-14 rounded-full bg-emerald-100 dark:bg-emerald-900/30 flex items-center justify-center">
+                  <CheckCircle2 className="w-8 h-8 text-emerald-500" />
+                </div>
+                <h3 className="text-base font-semibold">Connection Complete!</h3>
+              </div>
+
+              {/* Summary */}
+              <div className="text-left rounded-lg border border-border bg-muted/30 p-3 space-y-1.5">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-muted-foreground">Spreadsheet</span>
+                  <span className="font-medium truncate max-w-[60%] text-right">{selectedFile}</span>
+                </div>
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-muted-foreground">Sync mode</span>
+                  <span className="font-medium">
+                    {syncMode === 'all' ? 'All Tabs' : `Tab: ${sheetName}`}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-muted-foreground">Dashboard</span>
+                  <span className="font-medium text-primary">{dashName}</span>
+                </div>
+              </div>
+
+              <p className="text-xs text-muted-foreground">
+                Your Google Sheet is connected. Click <strong>Go to Dashboard</strong> to view
+                and manage leads from{' '}
+                <strong>{syncMode === 'single' ? sheetName : 'all tabs'}</strong>.
+              </p>
+
+              <div className="flex flex-col gap-2">
+                <Button
+                  className="w-full gap-2"
+                  onClick={() => { onClose(); navigate(dashUrl) }}
+                >
+                  <BarChart3 className="w-4 h-4" />
+                  Go to Dashboard
+                </Button>
+                <Button variant="outline" className="w-full" onClick={onClose}>
+                  Done
+                </Button>
+              </div>
+            </div>
+          )
+        })()}
       </DialogContent>
     </Dialog>
   )
