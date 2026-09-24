@@ -1250,7 +1250,10 @@ exports.getGoogleSheetsContexts = async (req, res, next) => {
 
     // If there is a currently connected spreadsheet, put it first
     if (connectedSpreadsheetId) {
-      const leadEntry = leadMap[connectedSpreadsheetId];
+      // Fall back to legacy leads (spreadsheetId: null) — these are all leads synced before
+      // the spreadsheetId field was added to the Lead model. We associate them with the
+      // currently connected spreadsheet so they appear in the selector with correct counts.
+      const leadEntry = leadMap[connectedSpreadsheetId] || leadMap['__no_spreadsheet_id__'];
       const tabs = leadEntry ? leadEntry.tabs : [];
 
       // For all-tabs mode: include a synthetic "All Tabs" entry
@@ -1277,8 +1280,9 @@ exports.getGoogleSheetsContexts = async (req, res, next) => {
         totalLeads:    leadEntry?.totalLeads || 0,
       });
 
-      // Mark as processed
+      // Mark as processed (also remove legacy entry so it's not shown as orphan spreadsheet)
       delete leadMap[connectedSpreadsheetId];
+      delete leadMap['__no_spreadsheet_id__'];
     }
 
     // Include any other spreadsheets found in lead data (previously connected spreadsheets)

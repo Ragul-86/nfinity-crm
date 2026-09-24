@@ -31,19 +31,28 @@ exports.getLeads = async (req, res, next) => {
       tf.assignedTo = req.user.id;
     }
 
+    // Pre-process special query values that APIFeatures cannot handle natively:
+    // - externalSource=all_sheets  → { $in: ['google_sheet', 'google_sheets'] }
+    // These are applied directly to tf so MongoDB gets the correct operator.
+    const qs = { ...req.query };
+    if (qs.externalSource === 'all_sheets') {
+      tf.externalSource = { $in: ['google_sheet', 'google_sheets'] };
+      delete qs.externalSource;
+    }
+
     const baseQuery = Lead.find(tf)
       .populate('assignedTo', 'name email avatar')
       .populate('createdBy', 'name email')
       .populate('campaign', 'name');
 
-    const features = new APIFeatures(baseQuery, req.query)
+    const features = new APIFeatures(baseQuery, qs)
       .search(['name', 'email', 'company', 'phone', 'leadId'])
       .filter()
       .sort()
       .paginate();
 
     // Count with same search/filter applied (not raw tf) so pagination total is accurate
-    const countFeatures = new APIFeatures(Lead.find(tf), req.query)
+    const countFeatures = new APIFeatures(Lead.find(tf), qs)
       .search(['name', 'email', 'company', 'phone', 'leadId'])
       .filter();
 
@@ -255,6 +264,105 @@ exports.getLeadStats = async (req, res, next) => {
         totals: totalValue[0] || { total: 0, count: 0 },
       },
     });
+  } catch (e) { next(e); }
+};
+
+// ── GET /api/leads/pipeline-breakdown ─────────────────────────────────────────
+// Aggregates filtered leads by pipelineId → stageId, joins Pipeline docs for
+// stage names, order, and colors. Used by the GSheetLeadsDashboard.
+// Accepts same stream filter params as getLeadStats:
+//   sheetName, externalSource (incl. 'all_sheets'), metaFormId, source, campaignId
+// ──────────────────────────────────────────────────────────────────────────────
+exports.getPipelineBreakdown = async (req, res, next) => {
+  try {
+    const tf = getTenantFilter(req);
+    if (req.user.role === 'employee') tf.assignedTo = req.user.id;
+
+    const streamFilter = {};
+    if (req.query.metaFormId)     streamFilter.metaFormId     = req.query.metaFormId;
+    if (req.query.sheetName)      streamFilter.sheetName      = req.query.sheetName;
+    if (req.query.source)         streamFilter.source         = req.query.source;
+    if (req.query.campaignId)     streamFilter.campaignId     = req.query.campaignId;
+    if (req.query.externalSource) {
+      if (req.query.externalSource === 'all_sheets') {
+        streamFilter.externalSource = { $in: ['google_sheet', 'google_sheets'] };
+      } else {
+        streamFilter.externalSource = req.query.externalSource;
+      }
+    } else if (req.query.sheetName) {
+      streamFilter.externalSource = { $in: ['google_sheet', 'google_sheets'] };
+    }
+
+    const matchFilter = { ...tf, ...streamFilter };
+
+    // Group by pipelineId → stageId
+    const agg = await Lead.aggregate([
+      { $match: { ...matchFilter, pipelineId: { $ne: null, $exists: true } } },
+      {
+        $group: {
+          _id:      { pipelineId: '$pipelineId', stageId: '$stageId', stageName: '$stageName' },
+          count:    { $sum: 1 },
+        },
+      },
+      {
+        $group: {
+          _id:    '$_id.pipelineId',
+          stages: {
+            $push: {
+              stageId:   '$_id.stageId',
+              stageName: '$_id.stageName',
+              count:     '$count',
+            },
+          },
+          total: { $sum: '$count' },
+        },
+      },
+      { $sort: { total: -1 } },
+    ]);
+
+    if (agg.length === 0) {
+      return res.json({ success: true, data: [] });
+    }
+
+    // Fetch Pipeline docs to get name, stage order, color, type
+    const Pipeline = require('../models/Pipeline');
+    const pipelineIds = agg.map(a => a._id).filter(Boolean);
+    const pipelines   = await Pipeline.find({ _id: { $in: pipelineIds }, ...tf }).lean();
+    const pipelineMap = {};
+    for (const p of pipelines) pipelineMap[p._id.toString()] = p;
+
+    const result = agg.map(({ _id: pipelineId, stages, total }) => {
+      const pipeline      = pipelineMap[pipelineId?.toString()] || {};
+      const pipelineStages = pipeline.stages || [];
+
+      // Build stageId → meta map from Pipeline doc
+      const stageMeta = {};
+      for (const s of pipelineStages) {
+        stageMeta[s._id.toString()] = s;
+      }
+
+      // Enrich each stage with Pipeline-doc data, sort by order
+      const enrichedStages = stages.map(s => {
+        const meta = stageMeta[s.stageId?.toString()] || {};
+        return {
+          stageId:   s.stageId,
+          stageName: s.stageName || meta.name || 'Unknown Stage',
+          count:     s.count,
+          order:     meta.order  ?? 0,
+          color:     meta.color  || '#6366f1',
+          type:      meta.type   || 'open',
+        };
+      }).sort((a, b) => a.order - b.order);
+
+      return {
+        pipelineId,
+        pipelineName: pipeline.name || 'Unnamed Pipeline',
+        stages:       enrichedStages,
+        total,
+      };
+    });
+
+    res.json({ success: true, data: result });
   } catch (e) { next(e); }
 };
 

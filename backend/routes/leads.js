@@ -5,14 +5,16 @@ const {
   getLeads, getLead, createLead, updateLead, deleteLead,
   addNote, deleteNote, getLeadStats, getTimeline,
   bulkAction, importLeads, exportLeads, getAdSummary,
+  getPipelineBreakdown,
 } = require('../controllers/leadController');
 
 router.use(protect);
 
 // Stats & export & ad summary — all before /:id
-router.get('/stats', getLeadStats);
-router.get('/export', exportLeads);
-router.get('/ads', getAdSummary);
+router.get('/stats',              getLeadStats);
+router.get('/pipeline-breakdown', getPipelineBreakdown);
+router.get('/export',             exportLeads);
+router.get('/ads',                getAdSummary);
 
 // Bulk & import
 router.post('/bulk', bulkAction);

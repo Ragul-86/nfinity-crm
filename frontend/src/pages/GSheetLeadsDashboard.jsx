@@ -7,12 +7,17 @@
  *
  * Route:  /leads/dashboard
  * Query params (set by selector, stored in URL for shareability):
- *   ?spreadsheetId=XXXX        — stable Google spreadsheet ID
+ *   ?spreadsheetId=XXXX        — stable Google spreadsheet ID (for selector display only)
  *   ?sheetName=Performance%20Marketer  — optional tab name (absent = all tabs)
  *
- * Tenant isolation: spreadsheetId + sheetName come from URL but the backend
- * always AND them with tenantId from the JWT. A user can never see another
- * tenant's leads by manipulating URL params.
+ * IMPORTANT — filter strategy:
+ *   The API calls do NOT include spreadsheetId in the filter because all leads
+ *   synced before the spreadsheetId field was added have spreadsheetId: null.
+ *   The primary filter is sheetName + externalSource=all_sheets. The spreadsheetId
+ *   in the URL is only used to drive the selector dropdown display.
+ *
+ * Tenant isolation: sheetName comes from URL but the backend always AND's it
+ * with tenantId from the JWT. A user can never see another tenant's leads.
  */
 
 import { useState, useEffect, useMemo, useCallback } from 'react'
@@ -20,16 +25,15 @@ import { useSearchParams, useNavigate, Link } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
-  PieChart, Pie, Cell, Legend,
+  PieChart, Pie, Cell,
 } from 'recharts'
 import {
   Users, TrendingUp, PhoneCall, CheckCircle2, XCircle, Clock,
   RefreshCcw, ExternalLink, FileSpreadsheet, Layers, AlertCircle,
-  ArrowRight, SlidersHorizontal, TableProperties,
+  ArrowRight, SlidersHorizontal, TableProperties, KanbanSquare,
 } from 'lucide-react'
-import { format, formatDistanceToNow } from 'date-fns'
+import { formatDistanceToNow } from 'date-fns'
 import api from '@/services/api'
-import PageHeader from '@/components/common/PageHeader'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -50,6 +54,13 @@ const STATUS_CONFIG = {
   lost:           { label: 'Lost',       color: '#ef4444', bg: 'bg-red-100 text-red-700 dark:bg-red-950/40 dark:text-red-400' },
   converted:      { label: 'Converted',  color: '#8b5cf6', bg: 'bg-violet-100 text-violet-700 dark:bg-violet-950/40 dark:text-violet-400' },
   archived:       { label: 'Archived',   color: '#6b7280', bg: 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-400' },
+}
+
+// Stage type colors (for pipeline breakdown bars)
+const STAGE_TYPE_COLOR = {
+  won:  '#10b981',
+  lost: '#ef4444',
+  open: '#6366f1',
 }
 
 const PIE_COLORS = ['#6366f1','#3b82f6','#06b6d4','#f59e0b','#f97316','#10b981','#ef4444','#8b5cf6']
@@ -93,8 +104,89 @@ function KPICard({ title, value, icon: Icon, color, loading, sub }) {
   )
 }
 
+// ── Pipeline Breakdown Component ───────────────────────────────────────────
+// Shows actual pipelineId/stageId data from Lead documents.
+// Each pipeline is rendered as a horizontal bar chart section.
+function PipelineBreakdown({ data, loading }) {
+  if (loading) {
+    return (
+      <div className="space-y-6">
+        {[1, 2].map(i => (
+          <div key={i} className="space-y-2">
+            <Skeleton className="h-4 w-40" />
+            <Skeleton className="h-32 w-full" />
+          </div>
+        ))}
+      </div>
+    )
+  }
+
+  if (!data || data.length === 0) {
+    return (
+      <div className="h-48 flex flex-col items-center justify-center gap-2 text-sm text-muted-foreground">
+        <KanbanSquare className="w-8 h-8 opacity-25" />
+        <p>No pipeline data for the selected context.</p>
+        <p className="text-[11px]">Leads appear here once assigned to a pipeline stage.</p>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-6">
+      {data.map((pipeline) => {
+        const chartData = pipeline.stages.map(s => ({
+          name:  s.stageName,
+          count: s.count,
+          fill:  s.color || STAGE_TYPE_COLOR[s.type] || '#6366f1',
+          type:  s.type,
+        }))
+
+        return (
+          <div key={pipeline.pipelineId?.toString()}>
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center gap-2">
+                <KanbanSquare className="w-3.5 h-3.5 text-muted-foreground" />
+                <span className="text-xs font-semibold text-foreground">{pipeline.pipelineName}</span>
+              </div>
+              <span className="text-[11px] text-muted-foreground">{pipeline.total} leads</span>
+            </div>
+            <ResponsiveContainer width="100%" height={160}>
+              <BarChart data={chartData} margin={{ top: 4, right: 10, left: 0, bottom: 20 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
+                <XAxis
+                  dataKey="name"
+                  tick={{ fontSize: 9 }}
+                  stroke="hsl(var(--muted-foreground))"
+                  interval={0}
+                  angle={-30}
+                  textAnchor="end"
+                  height={40}
+                />
+                <YAxis
+                  tick={{ fontSize: 9 }}
+                  stroke="hsl(var(--muted-foreground))"
+                  allowDecimals={false}
+                  width={28}
+                />
+                <Tooltip
+                  contentStyle={tooltipStyle}
+                  formatter={(val, _name, props) => [val, props.payload.name]}
+                />
+                <Bar dataKey="count" radius={[3, 3, 0, 0]}>
+                  {chartData.map((entry, i) => (
+                    <Cell key={i} fill={entry.fill} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 // ── Sheet / Tab Selector ───────────────────────────────────────────────────
-// Renders a compact selector that encodes selection into URL search params.
 function SheetSelector({ contexts, spreadsheetId, sheetName, onSelect }) {
   const { spreadsheets = [], isConnected, legacyLeadsCount = 0 } = contexts || {}
 
@@ -142,7 +234,7 @@ function SheetSelector({ contexts, spreadsheetId, sheetName, onSelect }) {
         isSpreadsheet: false,
       })
     }
-    // If spreadsheet has no all-tabs entry but has tabs, show spreadsheet-level option
+    // If spreadsheet has multiple tabs but no isAllTabs, add a spreadsheet-level option
     if (!ss.tabs.some(t => t.isAllTabs) && ss.tabs.length > 1) {
       options.unshift({
         value:         `${ss.spreadsheetId}||`,
@@ -153,17 +245,13 @@ function SheetSelector({ contexts, spreadsheetId, sheetName, onSelect }) {
         isSpreadsheet: true,
       })
     }
-    // Single-tab spreadsheet with no "All Tabs" entry
-    if (!ss.tabs.some(t => t.isAllTabs) && ss.tabs.length === 1 && !ss.tabs[0].isAllTabs) {
-      // tab already added above
-    }
   }
 
-  // Legacy leads (synced before spreadsheetId field was added)
-  if (legacyLeadsCount > 0) {
+  // Legacy leads (only shown if no connected spreadsheet claimed them)
+  if (legacyLeadsCount > 0 && spreadsheets.length === 0) {
     options.push({
       value:         '__legacy__||',
-      label:         `Legacy Google Sheet Leads (${legacyLeadsCount})`,
+      label:         `Google Sheet Leads (${legacyLeadsCount})`,
       spreadsheetId: null,
       sheetName:     null,
       count:         legacyLeadsCount,
@@ -192,7 +280,7 @@ function SheetSelector({ contexts, spreadsheetId, sheetName, onSelect }) {
           <SelectValue placeholder="Select Google Sheet…" />
         </SelectTrigger>
         <SelectContent>
-          {options.map((opt, i) => (
+          {options.map((opt) => (
             <SelectItem key={opt.value} value={opt.value}>
               <span className="flex items-center gap-2">
                 {opt.isSpreadsheet
@@ -218,6 +306,8 @@ export default function GSheetLeadsDashboard() {
   const qc = useQueryClient()
 
   // ── Read filter from URL ────────────────────────────────────────────────
+  // spreadsheetId is for selector DISPLAY only — not included in API filters
+  // because all existing leads have spreadsheetId: null (synced before field was added).
   const spreadsheetId = searchParams.get('spreadsheetId') || null
   const sheetName     = searchParams.get('sheetName')     || null
 
@@ -229,34 +319,35 @@ export default function GSheetLeadsDashboard() {
     setSearchParams(next, { replace: true })
   }, [setSearchParams])
 
-  // ── Build query params for API calls ───────────────────────────────────
+  // ── Build API filter params ─────────────────────────────────────────────
+  // KEY FIX: Do NOT include spreadsheetId in API calls — it returns 0 results
+  // for all existing leads which have spreadsheetId: null.
+  // Use sheetName (when a specific tab is selected) + externalSource=all_sheets.
   const filterParams = useMemo(() => {
     const p = new URLSearchParams()
-    if (spreadsheetId) p.set('spreadsheetId', spreadsheetId)
-    if (sheetName)     p.set('sheetName', sheetName)
-    // Always scope to Google Sheets externalSource (covers both integration types)
+    // sheetName scopes to a specific tab; absent = all Google Sheets tabs
+    if (sheetName) p.set('sheetName', sheetName)
+    // 'all_sheets' = backend expands to { $in: ['google_sheet', 'google_sheets'] }
     p.set('externalSource', 'all_sheets')
     return p.toString()
-  }, [spreadsheetId, sheetName])
+  }, [sheetName])
 
-  // When legacy is selected (no spreadsheetId), filter without spreadsheetId
-  // but still scope to google_sheets source
+  // Recent leads list uses same filter + pagination
   const leadsFilterParams = useMemo(() => {
     const p = new URLSearchParams()
-    if (spreadsheetId) p.set('spreadsheetId', spreadsheetId)
-    if (sheetName)     p.set('sheetName', sheetName)
-    p.set('externalSource', 'google_sheets')
+    if (sheetName) p.set('sheetName', sheetName)
+    p.set('externalSource', 'all_sheets')
     p.set('limit', '15')
     p.set('sort', '-createdAt')
     return p.toString()
-  }, [spreadsheetId, sheetName])
+  }, [sheetName])
 
   // ── Queries ─────────────────────────────────────────────────────────────
 
   // 1. Sheet contexts for the selector
   const { data: contextsData } = useQuery({
     queryKey: ['gsheet-contexts'],
-    queryFn: () => api.get('/integrations/google_sheets/contexts').then(r => r.data.data),
+    queryFn:  () => api.get('/integrations/google_sheets/contexts').then(r => r.data.data),
     staleTime: 60_000,
   })
 
@@ -265,41 +356,41 @@ export default function GSheetLeadsDashboard() {
     if (!spreadsheetId && contextsData?.spreadsheets?.length > 0) {
       const first = contextsData.spreadsheets[0]
       if (first.spreadsheetId) {
-        const firstTab = first.tabs.find(t => !t.isAllTabs)
         const nextParams = { spreadsheetId: first.spreadsheetId }
-        if (!first.tabs.some(t => t.isAllTabs) && firstTab) {
-          nextParams.sheetName = firstTab.sheetName
+        // For single-tab mode: also set sheetName so the filter is tab-scoped
+        if (!first.tabs.some(t => t.isAllTabs)) {
+          const firstRealTab = first.tabs.find(t => !t.isAllTabs)
+          if (firstRealTab) nextParams.sheetName = firstRealTab.sheetName
         }
         setSearchParams(nextParams, { replace: true })
       }
     }
   }, [contextsData, spreadsheetId, setSearchParams])
 
-  // 2. Lead stats for KPIs
+  // 2. Lead stats for KPIs (uses filterParams — no spreadsheetId)
   const { data: statsData, isLoading: statsLoading } = useQuery({
     queryKey: ['gsheet-lead-stats', filterParams],
-    queryFn: () => api.get(`/leads/stats?${filterParams}`).then(r => r.data.data),
-    enabled: true,
+    queryFn:  () => api.get(`/leads/stats?${filterParams}`).then(r => r.data.data),
     staleTime: 30_000,
   })
 
-  // 3. Recent leads list
+  // 3. Pipeline / stage breakdown using actual pipelineId / stageId on leads
+  const { data: pipelineData, isLoading: pipelineLoading } = useQuery({
+    queryKey: ['gsheet-pipeline-breakdown', filterParams],
+    queryFn:  () => api.get(`/leads/pipeline-breakdown?${filterParams}`).then(r => r.data.data),
+    staleTime: 30_000,
+  })
+
+  // 4. Recent leads list
   const { data: leadsData, isLoading: leadsLoading } = useQuery({
     queryKey: ['gsheet-recent-leads', leadsFilterParams],
-    queryFn: () => api.get(`/leads?${leadsFilterParams}`).then(r => r.data),
-    staleTime: 30_000,
-  })
-
-  // 4. Pipeline / stage breakdown (using lead-streams stats-by-filter)
-  const { data: streamStats, isLoading: streamStatsLoading } = useQuery({
-    queryKey: ['gsheet-stream-stats', filterParams],
-    queryFn: () => api.get(`/lead-streams/stats-by-filter?${filterParams}`).then(r => r.data.data),
+    queryFn:  () => api.get(`/leads?${leadsFilterParams}`).then(r => r.data),
     staleTime: 30_000,
   })
 
   const handleRefresh = () => {
     qc.invalidateQueries({ predicate: q =>
-      ['gsheet-lead-stats', 'gsheet-recent-leads', 'gsheet-stream-stats', 'gsheet-contexts'].some(
+      ['gsheet-lead-stats', 'gsheet-recent-leads', 'gsheet-pipeline-breakdown', 'gsheet-contexts'].some(
         k => q.queryKey[0] === k
       )
     })
@@ -310,29 +401,26 @@ export default function GSheetLeadsDashboard() {
   const totals      = statsData?.totals   || { count: 0, total: 0 }
   const recentLeads = leadsData?.data     || []
 
-  const totalLeads   = totals.count || 0
-  const newLeads     = kpiCount(byStatus, 'new_lead')
-  const contacted    = kpiCount(byStatus, 'contacted')
-  const won          = kpiCount(byStatus, 'won')
-  const lost         = kpiCount(byStatus, 'lost')
-
-  // Pipeline bar chart data (all statuses with counts)
-  const pipelineChartData = Object.entries(STATUS_CONFIG)
-    .map(([key, cfg]) => ({
-      name:  cfg.label,
-      count: kpiCount(byStatus, key),
-      fill:  cfg.color,
-    }))
-    .filter(d => d.count > 0)
+  const totalLeads = totals.count || 0
+  const newLeads   = kpiCount(byStatus, 'new_lead')
+  const contacted  = kpiCount(byStatus, 'contacted')
+  const won        = kpiCount(byStatus, 'won')
+  const lost       = kpiCount(byStatus, 'lost')
 
   // Status pie chart data
-  const pieData = pipelineChartData.map((d, i) => ({ ...d, fill: PIE_COLORS[i % PIE_COLORS.length] }))
+  const pieData = Object.entries(STATUS_CONFIG)
+    .map(([key, cfg], i) => ({
+      name:  cfg.label,
+      count: kpiCount(byStatus, key),
+      fill:  PIE_COLORS[i % PIE_COLORS.length],
+    }))
+    .filter(d => d.count > 0)
 
   // ── Context label for subtitle ──────────────────────────────────────────
   const contextLabel = useMemo(() => {
     if (!contextsData?.spreadsheets?.length) return 'Google Sheets Leads'
     const ss = contextsData.spreadsheets.find(s => s.spreadsheetId === spreadsheetId)
-    if (!ss) return 'Google Sheets Leads'
+    if (!ss) return sheetName ? `All Sheets › ${sheetName}` : 'All Google Sheets Leads'
     return sheetName
       ? `${ss.displayName} › ${sheetName}`
       : `${ss.displayName} — All Tabs`
@@ -341,12 +429,13 @@ export default function GSheetLeadsDashboard() {
   // ── "View All Leads" URL — passes same filter to Leads page ────────────
   const viewAllLeadsUrl = useMemo(() => {
     const p = new URLSearchParams()
-    if (spreadsheetId) p.set('spreadsheetId', spreadsheetId)
-    if (sheetName)     p.set('sheetName', sheetName)
+    // Match the API filter strategy: sheetName only (no spreadsheetId)
+    if (sheetName) p.set('sheetName', sheetName)
+    p.set('externalSource', 'all_sheets')
     p.set('streamName', contextLabel)
     p.set('streamType', 'sheet_tab')
     return `/crm-leads?${p.toString()}`
-  }, [spreadsheetId, sheetName, contextLabel])
+  }, [sheetName, contextLabel])
 
   return (
     <div className="space-y-6">
@@ -388,7 +477,7 @@ export default function GSheetLeadsDashboard() {
                 onSelect={handleSelect}
               />
             </div>
-            {contextLabel !== 'Google Sheets Leads' && (
+            {contextLabel !== 'All Google Sheets Leads' && (
               <div className="sm:ml-auto flex items-center gap-2 text-xs text-muted-foreground bg-muted/40 px-3 py-1.5 rounded-lg">
                 <SlidersHorizontal className="w-3.5 h-3.5" />
                 All metrics below are filtered to: <span className="font-medium text-foreground">{contextLabel}</span>
@@ -440,33 +529,16 @@ export default function GSheetLeadsDashboard() {
 
       {/* ── Charts Row ── */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        {/* Pipeline bar chart */}
+        {/* Pipeline / Stage breakdown — uses real pipelineId/stageId from leads */}
         <Card className="lg:col-span-2">
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-semibold">Pipeline Breakdown</CardTitle>
+            <CardTitle className="text-sm font-semibold flex items-center gap-2">
+              <KanbanSquare className="w-4 h-4 text-muted-foreground" />
+              Pipeline Breakdown
+            </CardTitle>
           </CardHeader>
           <CardContent>
-            {statsLoading ? (
-              <Skeleton className="h-48 w-full" />
-            ) : pipelineChartData.length === 0 ? (
-              <div className="h-48 flex items-center justify-center text-sm text-muted-foreground">
-                No leads in this context yet
-              </div>
-            ) : (
-              <ResponsiveContainer width="100%" height={200}>
-                <BarChart data={pipelineChartData} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                  <XAxis dataKey="name" tick={{ fontSize: 10 }} stroke="hsl(var(--muted-foreground))" />
-                  <YAxis tick={{ fontSize: 10 }} stroke="hsl(var(--muted-foreground))" allowDecimals={false} />
-                  <Tooltip contentStyle={tooltipStyle} />
-                  <Bar dataKey="count" radius={[4, 4, 0, 0]}>
-                    {pipelineChartData.map((entry, i) => (
-                      <Cell key={i} fill={entry.fill} />
-                    ))}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-            )}
+            <PipelineBreakdown data={pipelineData} loading={pipelineLoading} />
           </CardContent>
         </Card>
 
@@ -567,6 +639,13 @@ export default function GSheetLeadsDashboard() {
                     {lead.sheetName && (
                       <span className="hidden sm:inline-flex items-center text-[10px] text-muted-foreground bg-muted px-2 py-0.5 rounded shrink-0">
                         {lead.sheetName}
+                      </span>
+                    )}
+
+                    {/* Pipeline stage badge (if in pipeline) */}
+                    {lead.stageName && (
+                      <span className="hidden md:inline-flex items-center text-[10px] text-muted-foreground bg-muted/60 px-2 py-0.5 rounded shrink-0 border border-border">
+                        {lead.stageName}
                       </span>
                     )}
 
