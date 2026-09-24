@@ -321,12 +321,13 @@ export default function Leads() {
   const LIMIT = 20
 
   // ── Stream context from URL (set when navigating from LeadSources) ──────────
-  const streamName   = searchParams.get('streamName') || ''
-  const streamType   = searchParams.get('streamType') || ''
-  const metaFormId   = searchParams.get('metaFormId') || ''
-  const sheetName    = searchParams.get('sheetName') || ''
-  const streamSource = searchParams.get('source') || ''
-  const campaignId   = searchParams.get('campaignId') || ''
+  const streamName    = searchParams.get('streamName') || ''
+  const streamType    = searchParams.get('streamType') || ''
+  const metaFormId    = searchParams.get('metaFormId') || ''
+  const sheetName     = searchParams.get('sheetName') || ''
+  const spreadsheetId = searchParams.get('spreadsheetId') || ''
+  const streamSource  = searchParams.get('source') || ''
+  const campaignId    = searchParams.get('campaignId') || ''
 
   // If stream context present, lock the source filter to the stream's source
   const effectiveSource = streamSource || filters.source
@@ -341,9 +342,10 @@ export default function Leads() {
     ...(filters.pipelineId   && { pipelineId: filters.pipelineId }),
     ...(filters.stageId      && { stageId: filters.stageId }),
     // Stream filters
-    ...(metaFormId           && { metaFormId }),
-    ...(sheetName            && { sheetName }),
-    ...(campaignId           && { campaignId }),
+    ...(metaFormId            && { metaFormId }),
+    ...(sheetName             && { sheetName }),
+    ...(spreadsheetId         && { spreadsheetId }),
+    ...(campaignId            && { campaignId }),
   }).toString()
 
   const { data: leadsData, isLoading } = useQuery({
@@ -356,12 +358,13 @@ export default function Leads() {
   // Build stream filter params for stats — when in stream context, stats reflect the stream
   const statsQp = useMemo(() => {
     const p = new URLSearchParams()
-    if (metaFormId)   p.set('metaFormId', metaFormId)
-    if (sheetName)    p.set('sheetName', sheetName)
-    if (streamSource) p.set('source', streamSource)
-    if (campaignId)   p.set('campaignId', campaignId)
+    if (metaFormId)    p.set('metaFormId', metaFormId)
+    if (sheetName)     p.set('sheetName', sheetName)
+    if (spreadsheetId) p.set('spreadsheetId', spreadsheetId)
+    if (streamSource)  p.set('source', streamSource)
+    if (campaignId)    p.set('campaignId', campaignId)
     return p.toString()
-  }, [metaFormId, sheetName, streamSource, campaignId])
+  }, [metaFormId, sheetName, spreadsheetId, streamSource, campaignId])
 
   const { data: statsData } = useQuery({
     queryKey: ['lead-stats', statsQp],

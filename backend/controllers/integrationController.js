@@ -1076,7 +1076,8 @@ exports.syncGoogleSheet = async (req, res, next) => {
             campaignName: _str(customFields.campaign_name),
             metaFormId:   _str(customFields.form_id),
             metaFormName: _str(customFields.form_name),
-            sheetName:    tabName,  // actual tab name for this row
+            sheetName:     tabName,      // actual tab name for this row
+            spreadsheetId: spreadsheetId, // stable Google spreadsheet ID
           };
 
           // ── Deterministic external key — raw id matches Apps Script format ─
@@ -1131,7 +1132,8 @@ exports.syncGoogleSheet = async (req, res, next) => {
             externalLeadId,
             externalSource,
             source,
-            sheetName: tabName,
+            sheetName:     tabName,
+            spreadsheetId: spreadsheetId,  // stable Google spreadsheet ID for cross-sheet filtering
             tags: campaignTag ? [`campaign:${campaignTag}`] : [],
             tenantId:  tf.tenantId,
             createdBy: req.user._id,
@@ -1178,6 +1180,135 @@ exports.syncGoogleSheet = async (req, res, next) => {
       (errors.length ? `, ${errors.length} error(s)` : '');
 
     res.json({ success: true, created, skipped, linked, errors, message });
+  } catch (e) { next(e); }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/integrations/google_sheets/contexts
+// Returns all available Google Sheet contexts (spreadsheet + tab combinations)
+// that a user can select for the Leads Dashboard selector.
+// Combines:
+//   1. The currently connected integration's config (spreadsheetId, tabs)
+//   2. Distinct (spreadsheetId, sheetName) pairs from actual lead documents
+// No credentials are exposed. tenantId always comes from JWT.
+// ─────────────────────────────────────────────────────────────────────────────
+exports.getGoogleSheetsContexts = async (req, res, next) => {
+  try {
+    const tf = getTenantFilter(req);
+    const Lead = require('../models/Lead');
+
+    // ── 1. Current integration config ──────────────────────────────────────
+    const integration = await Integration.findOne({ ...tf, provider: 'google_sheets' }).lean();
+    const config = integration?.config || {};
+    const connectedSpreadsheetId = config.spreadsheetId || null;
+    const selectedFileName       = config.selectedFileName || config.spreadsheetId || null;
+    const syncMode               = config.syncMode || 'single';
+    const configuredSheetName    = syncMode === 'single' ? (config.sheetName || null) : null;
+    const isConnected            = integration?.status === 'connected';
+
+    // ── 2. Distinct spreadsheets from Lead data ─────────────────────────────
+    // Groups by spreadsheetId first, then by sheetName within each spreadsheet.
+    const leadContexts = await Lead.aggregate([
+      {
+        $match: {
+          ...tf,
+          externalSource: { $in: ['google_sheets', 'google_sheet'] },
+          sheetName: { $ne: null, $exists: true },
+        },
+      },
+      {
+        $group: {
+          _id:           { spreadsheetId: '$spreadsheetId', sheetName: '$sheetName' },
+          count:         { $sum: 1 },
+          externalSources: { $addToSet: '$externalSource' },
+        },
+      },
+      {
+        $group: {
+          _id:   '$_id.spreadsheetId',
+          tabs:  {
+            $push: {
+              sheetName: '$_id.sheetName',
+              count:     '$count',
+              externalSources: '$externalSources',
+            },
+          },
+          totalLeads: { $sum: '$count' },
+        },
+      },
+      { $sort: { totalLeads: -1 } },
+    ]);
+
+    // ── 3. Merge config + lead data into selector-ready contexts ────────────
+    const spreadsheets = [];
+
+    // Build a map from lead aggregation for fast lookup
+    const leadMap = {};
+    for (const item of leadContexts) {
+      leadMap[item._id || '__no_spreadsheet_id__'] = item;
+    }
+
+    // If there is a currently connected spreadsheet, put it first
+    if (connectedSpreadsheetId) {
+      const leadEntry = leadMap[connectedSpreadsheetId];
+      const tabs = leadEntry ? leadEntry.tabs : [];
+
+      // For all-tabs mode: include a synthetic "All Tabs" entry
+      const tabsWithAll = syncMode === 'all'
+        ? [
+            {
+              sheetName:   null,
+              label:       'All Tabs',
+              count:       leadEntry?.totalLeads || 0,
+              isAllTabs:   true,
+            },
+            ...tabs.map(t => ({ sheetName: t.sheetName, label: t.sheetName, count: t.count })),
+          ]
+        : configuredSheetName
+          ? [{ sheetName: configuredSheetName, label: configuredSheetName, count: tabs.find(t => t.sheetName === configuredSheetName)?.count || 0 }]
+          : tabs.map(t => ({ sheetName: t.sheetName, label: t.sheetName, count: t.count }));
+
+      spreadsheets.push({
+        spreadsheetId: connectedSpreadsheetId,
+        displayName:   selectedFileName || connectedSpreadsheetId,
+        isConnected:   isConnected,
+        syncMode,
+        tabs:          tabsWithAll,
+        totalLeads:    leadEntry?.totalLeads || 0,
+      });
+
+      // Mark as processed
+      delete leadMap[connectedSpreadsheetId];
+    }
+
+    // Include any other spreadsheets found in lead data (previously connected spreadsheets)
+    for (const [sid, item] of Object.entries(leadMap)) {
+      if (sid === '__no_spreadsheet_id__') continue;
+      spreadsheets.push({
+        spreadsheetId: sid,
+        displayName:   sid,          // no display name available for old spreadsheets
+        isConnected:   false,
+        syncMode:      'unknown',
+        tabs: item.tabs.map(t => ({ sheetName: t.sheetName, label: t.sheetName, count: t.count })),
+        totalLeads: item.totalLeads,
+      });
+    }
+
+    // ── 4. Leads with NO spreadsheetId (legacy — synced before this field was added) ──
+    const legacyEntry = leadMap['__no_spreadsheet_id__'];
+    const legacyCount = legacyEntry?.totalLeads || 0;
+
+    res.json({
+      success: true,
+      data: {
+        spreadsheets,
+        isConnected,
+        connectedSpreadsheetId,
+        selectedFileName,
+        syncMode,
+        legacyLeadsCount: legacyCount,  // leads synced before spreadsheetId field existed
+      },
+    });
   } catch (e) { next(e); }
 };
 

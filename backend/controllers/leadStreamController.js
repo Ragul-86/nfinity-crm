@@ -14,10 +14,11 @@ const err = (msg, code = 400) => Object.assign(new Error(msg), { statusCode: cod
 function buildLeadFilter(tf, streamFilter = {}) {
   const filter = { ...tf };
 
-  if (streamFilter.metaFormId)  filter.metaFormId = streamFilter.metaFormId;
-  if (streamFilter.sheetName)   filter.sheetName  = streamFilter.sheetName;
-  if (streamFilter.source)      filter.source     = streamFilter.source;
-  if (streamFilter.campaignId)  filter.campaignId = streamFilter.campaignId;
+  if (streamFilter.metaFormId)   filter.metaFormId   = streamFilter.metaFormId;
+  if (streamFilter.sheetName)    filter.sheetName    = streamFilter.sheetName;
+  if (streamFilter.spreadsheetId) filter.spreadsheetId = streamFilter.spreadsheetId;
+  if (streamFilter.source)       filter.source       = streamFilter.source;
+  if (streamFilter.campaignId)   filter.campaignId   = streamFilter.campaignId;
 
   // sheet_tab streams cover BOTH externalSource values (google_sheet + google_sheets)
   // unless a specific externalSource is explicitly requested
@@ -281,6 +282,7 @@ exports.getStatsByFilter = async (req, res, next) => {
     const streamFilter = {};
     if (req.query.metaFormId)     streamFilter.metaFormId     = req.query.metaFormId;
     if (req.query.sheetName)      streamFilter.sheetName      = req.query.sheetName;
+    if (req.query.spreadsheetId)  streamFilter.spreadsheetId  = req.query.spreadsheetId;
     if (req.query.source)         streamFilter.source         = req.query.source;
     if (req.query.campaignId)     streamFilter.campaignId     = req.query.campaignId;
     if (req.query.externalSource) streamFilter.externalSource = req.query.externalSource;

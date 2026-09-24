@@ -17,6 +17,7 @@ const {
   verifySheetAccess,
   saveSheetConfig,
   syncGoogleSheet,
+  getGoogleSheetsContexts,
 } = require('../controllers/integrationController');
 
 // ── OAuth callback is PUBLIC — the OAuth provider redirects here with no cookie ──
@@ -49,6 +50,7 @@ router.get('/oauth/:provider/init', authorize(...ALLOWED_ROLES), oauthInit);
 // ── Google Sheets (OAuth + Picker flow) ──────────────────────────────────────
 // These MUST come before the generic /:provider wildcard routes below.
 router.get('/google_sheets/picker-config',   authorize(...ALLOWED_ROLES), getGoogleSheetsPickerConfig);
+router.get('/google_sheets/contexts',        protect, getGoogleSheetsContexts);  // available sheet contexts for selector
 router.post('/google_sheets/config/verify',  authorize(...ALLOWED_ROLES), verifySheetAccess);
 router.post('/google_sheets/config',         authorize(...ALLOWED_ROLES), saveSheetConfig);
 router.post('/google_sheets/sync',           authorize(...ALLOWED_ROLES), syncGoogleSheet);

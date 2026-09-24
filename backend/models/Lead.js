@@ -90,7 +90,8 @@ const leadSchema = new mongoose.Schema({
   campaignName:{ type: String, default: null },  // Meta campaign_name (string, not ObjectId ref)
   metaFormId:  { type: String, default: null },  // Meta form_id (string; distinct from CRM formId ObjectId)
   metaFormName:{ type: String, default: null },  // Meta form_name
-  sheetName:   { type: String, default: null },  // Source Google Sheet tab name
+  sheetName:     { type: String, default: null },  // Source Google Sheet tab name
+  spreadsheetId: { type: String, default: null },  // Source Google Spreadsheet ID (stable, not display name)
 
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   tenantId: { type: mongoose.Schema.Types.ObjectId, ref: 'Tenant', index: true, sparse: true },
@@ -105,6 +106,7 @@ leadSchema.index({ tenantId: 1, adId: 1 }, { sparse: true })
 leadSchema.index({ tenantId: 1, campaignId: 1 }, { sparse: true })
 leadSchema.index({ tenantId: 1, pipelineId: 1 }, { sparse: true })
 leadSchema.index({ tenantId: 1, pipelineId: 1, stageId: 1 }, { sparse: true })
+leadSchema.index({ tenantId: 1, spreadsheetId: 1 }, { sparse: true })
 
 // Auto-generate leadId before save
 leadSchema.pre('save', async function (next) {

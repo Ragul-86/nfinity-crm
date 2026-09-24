@@ -208,10 +208,11 @@ exports.getLeadStats = async (req, res, next) => {
 
     // Optional stream-scoped filter — AND'd on top of tenantId
     const streamFilter = {};
-    if (req.query.metaFormId)     streamFilter.metaFormId = req.query.metaFormId;
-    if (req.query.sheetName)      streamFilter.sheetName  = req.query.sheetName;
-    if (req.query.source)         streamFilter.source     = req.query.source;
-    if (req.query.campaignId)     streamFilter.campaignId = req.query.campaignId;
+    if (req.query.metaFormId)     streamFilter.metaFormId     = req.query.metaFormId;
+    if (req.query.sheetName)      streamFilter.sheetName      = req.query.sheetName;
+    if (req.query.spreadsheetId)  streamFilter.spreadsheetId  = req.query.spreadsheetId;
+    if (req.query.source)         streamFilter.source         = req.query.source;
+    if (req.query.campaignId)     streamFilter.campaignId     = req.query.campaignId;
     if (req.query.externalSource) {
       // 'all_sheets' is a frontend convenience value meaning both integrations
       if (req.query.externalSource === 'all_sheets') {
