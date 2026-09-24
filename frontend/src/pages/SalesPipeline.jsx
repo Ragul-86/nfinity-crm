@@ -487,8 +487,16 @@ function BulkBar({ selectedIds, onClear, onBulkArchive, onBulkDelete, onBulkStag
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Main Component
+//
+// Optional props for Google Sheet context filtering:
+//   sourceFilter: { sheetName?: string | null }
+//     When provided, the lead query is scoped to Google Sheets leads
+//     (externalSource=all_sheets) + an optional tab (sheetName).
+//   initialPipelineId: string | null
+//     When provided and changes, overrides the stored pipeline selection.
+//     Used by GSheetLeadsDashboard to auto-select the tab's pipeline.
 // ─────────────────────────────────────────────────────────────────────────────
-export default function SalesPipeline() {
+export default function SalesPipeline({ sourceFilter = null, initialPipelineId = null } = {}) {
   const queryClient = useQueryClient()
 
   // ── UI state ────────────────────────────────────────────────────────────────
@@ -510,16 +518,27 @@ export default function SalesPipeline() {
   const [selectedIds,    setSelectedIds   ] = useState([])
   const [addToStage,     setAddToStage    ] = useState(null)   // stage obj for "Add Lead" prefill
 
-  // ── Pipeline selection (persisted) ──────────────────────────────────────────
+  // ── Pipeline selection (persisted, or overridden externally) ────────────────
   const [selectedPipelineId, _setSelectedPipelineId] = useState(
-    () => localStorage.getItem(LS_PIPELINE_KEY) || ''
+    () => initialPipelineId || localStorage.getItem(LS_PIPELINE_KEY) || ''
   )
   const setSelectedPipelineId = id => {
     _setSelectedPipelineId(id)
-    if (id) localStorage.setItem(LS_PIPELINE_KEY, id)
-    else    localStorage.removeItem(LS_PIPELINE_KEY)
+    // Only persist to localStorage when NOT driven by an external initialPipelineId
+    if (!initialPipelineId) {
+      if (id) localStorage.setItem(LS_PIPELINE_KEY, id)
+      else    localStorage.removeItem(LS_PIPELINE_KEY)
+    }
     setSelectedIds([])
   }
+
+  // When parent passes a new initialPipelineId (sheet context changed), switch pipelines
+  useEffect(() => {
+    if (initialPipelineId && initialPipelineId !== selectedPipelineId) {
+      _setSelectedPipelineId(initialPipelineId)
+      setSelectedIds([])
+    }
+  }, [initialPipelineId]) // eslint-disable-line
 
   // ── Load pipelines ──────────────────────────────────────────────────────────
   const { data: pipelinesRaw, isLoading: loadingPipelines } = useQuery({
@@ -557,12 +576,18 @@ export default function SalesPipeline() {
   }, [search, filterSource, filterPriority, filterAssigned])
 
   const { data: leadsData, isLoading: loadingLeads } = useQuery({
-    queryKey: ['pipeline-kanban', selectedPipelineId, kanbanParams],
-    queryFn: () => selectedPipelineId
-      ? api.get('/leads', {
-          params: { pipelineId: selectedPipelineId, limit: 1000, ...kanbanParams },
-        }).then(r => r.data.data || [])
-      : Promise.resolve([]),
+    // Include sourceFilter?.sheetName in the key so the query re-runs when sheet changes
+    queryKey: ['pipeline-kanban', selectedPipelineId, kanbanParams, sourceFilter?.sheetName ?? '__all__'],
+    queryFn: () => {
+      if (!selectedPipelineId) return Promise.resolve([])
+      const params = { pipelineId: selectedPipelineId, limit: 1000, ...kanbanParams }
+      // When a Google Sheet context is active, scope leads to that source/tab
+      if (sourceFilter) {
+        params.externalSource = 'all_sheets'   // backend expands to { $in: ['google_sheet','google_sheets'] }
+        if (sourceFilter.sheetName) params.sheetName = sourceFilter.sheetName
+      }
+      return api.get('/leads', { params }).then(r => r.data.data || [])
+    },
     enabled: !!selectedPipelineId,
     refetchInterval: 30_000,
     refetchOnWindowFocus: true,
