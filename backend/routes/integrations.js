@@ -16,6 +16,7 @@ const {
   getGoogleSheetsPickerConfig,
   verifySheetAccess,
   saveSheetConfig,
+  removeSheetConfig,
   syncGoogleSheet,
   getGoogleSheetsContexts,
 } = require('../controllers/integrationController');
@@ -54,6 +55,7 @@ router.get('/google_sheets/contexts',        protect, getGoogleSheetsContexts); 
 router.post('/google_sheets/config/verify',  authorize(...ALLOWED_ROLES), verifySheetAccess);
 router.post('/google_sheets/config',         authorize(...ALLOWED_ROLES), saveSheetConfig);
 router.post('/google_sheets/sync',           authorize(...ALLOWED_ROLES), syncGoogleSheet);
+router.delete('/google_sheets/config/:spreadsheetId', authorize(...ALLOWED_ROLES), removeSheetConfig);
 
 // ── Integration CRUD ──────────────────────────────────────────────────────────
 // These must come AFTER the /oauth/* routes to avoid /:provider matching "oauth".

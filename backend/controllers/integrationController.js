@@ -926,6 +926,56 @@ exports.saveSheetConfig = async (req, res, next) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// DELETE /api/integrations/google_sheets/config/:spreadsheetId
+// Remove ONE spreadsheet from config.spreadsheets without disconnecting the
+// integration or touching any other configured spreadsheet.
+// ─────────────────────────────────────────────────────────────────────────────
+exports.removeSheetConfig = async (req, res, next) => {
+  try {
+    const tf = getTenantFilter(req);
+    const { spreadsheetId } = req.params;
+    if (!spreadsheetId) return next(err('spreadsheetId is required', 400));
+
+    const doc = await Integration.findOne({ ...tf, provider: 'google_sheets' });
+    if (!doc) return next(err('Google Sheets is not connected', 404));
+
+    const existing = Array.isArray(doc.config?.spreadsheets) ? doc.config.spreadsheets : [];
+    const filtered = existing.filter(s => s.spreadsheetId !== String(spreadsheetId));
+
+    if (filtered.length === existing.length) {
+      return next(err('Spreadsheet not found in configuration', 404));
+    }
+
+    // Promote the first remaining sheet to be the legacy primary (backward compat)
+    const newPrimary = filtered[0] || null;
+
+    await Integration.findOneAndUpdate(
+      { ...tf, provider: 'google_sheets' },
+      {
+        $set: {
+          'config.spreadsheets':     filtered,
+          'config.spreadsheetId':    newPrimary?.spreadsheetId    || '',
+          'config.selectedFileName': newPrimary?.displayName      || '',
+          'config.syncMode':         newPrimary?.syncMode         || 'single',
+          'config.sheetName':        newPrimary?.sheetName        || '',
+        },
+      },
+      { new: true }
+    );
+
+    await logAction({
+      action: 'integration_updated', module: 'integrations',
+      performedBy: req.user._id, tenantId: tf.tenantId,
+      resourceId: 'google_sheets', resourceType: 'integration',
+      details: { removed: spreadsheetId, remaining: filtered.length },
+      req,
+    });
+
+    res.json({ success: true, message: 'Spreadsheet removed', remaining: filtered.length });
+  } catch (e) { next(e); }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 // POST /api/integrations/google_sheets/sync
 // Read all rows from the configured sheet and upsert as Leads.
 //
@@ -952,7 +1002,14 @@ exports.syncGoogleSheet = async (req, res, next) => {
       ? doc.config.spreadsheets
       : null;
     if (configSheets) {
-      const primary = configSheets.find(s => s.spreadsheetId === doc.config?.spreadsheetId) || configSheets[0];
+      // If caller passes targetSpreadsheetId, sync that specific sheet; otherwise sync primary.
+      const targetId = req.body?.targetSpreadsheetId || null;
+      const primary  = targetId
+        ? configSheets.find(s => s.spreadsheetId === targetId)
+        : (configSheets.find(s => s.spreadsheetId === doc.config?.spreadsheetId) || configSheets[0]);
+      if (!primary) return next(err(
+        targetId ? `Spreadsheet not found in config: ${targetId}` : 'No spreadsheet configured', 400
+      ));
       spreadsheetId = primary.spreadsheetId;
       sheetName     = primary.sheetName;
       syncMode      = primary.syncMode === 'all' ? 'all' : 'single';

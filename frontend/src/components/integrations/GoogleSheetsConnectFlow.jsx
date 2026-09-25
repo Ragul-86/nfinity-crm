@@ -71,7 +71,12 @@ function StepDot({ n, label, active, done }) {
 }
 
 // ── Main component ────────────────────────────────────────────────────────────
-export default function GoogleSheetsConnectFlow({ open, onClose, integration }) {
+// reconfigSheet — when provided, the user is reconfiguring an EXISTING sheet
+//   (e.g. changing sync mode / tab).  The picker step displays which sheet is
+//   being reconfigured so the user doesn't confuse it with adding a new one.
+//   On save, saveSheetConfig does an upsert by spreadsheetId — so if the user
+//   picks the same sheet it updates; if different it adds a new entry.
+export default function GoogleSheetsConnectFlow({ open, onClose, integration, reconfigSheet = null }) {
   const qc = useQueryClient()
   const navigate = useNavigate()
 
@@ -91,6 +96,8 @@ export default function GoogleSheetsConnectFlow({ open, onClose, integration }) 
   const [sheetName,     setSheetName]     = useState(integration?.config?.sheetName || '')
   const [syncMode,      setSyncMode]      = useState(integration?.config?.syncMode || 'single')
   const [verifyError,   setVerifyError]   = useState('')
+  // activeReconfig tracks the sheet being reconfigured (can be cleared by "Add Another Sheet")
+  const [activeReconfig, setActiveReconfig] = useState(null)
 
   // Reset when modal opens/integration changes
   useEffect(() => {
@@ -103,6 +110,8 @@ export default function GoogleSheetsConnectFlow({ open, onClose, integration }) 
       setAvailableSheets([])
       setVerifyError('')
       setLoading(false)
+      // Capture reconfigSheet so "Add Another Sheet" can clear it
+      setActiveReconfig(reconfigSheet || null)
     }
   }, [open, isAlreadyConnected]) // eslint-disable-line
 
@@ -292,7 +301,12 @@ export default function GoogleSheetsConnectFlow({ open, onClose, integration }) 
                   style={{ backgroundColor: '#0F9D5818', border: '1px solid #0F9D5830' }}>
               📗
             </span>
-            {isAlreadyConnected ? 'Update Google Sheet' : 'Connect Google Sheets'}
+            {activeReconfig
+              ? 'Reconfigure Google Sheet'
+              : isAlreadyConnected
+                ? 'Connect Another Sheet'
+                : 'Connect Google Sheets'
+            }
           </DialogTitle>
         </DialogHeader>
 
@@ -332,7 +346,18 @@ export default function GoogleSheetsConnectFlow({ open, onClose, integration }) 
                 Authorized as {integration.config.connectedEmail}
               </div>
             )}
-            {hasSheet && (
+            {/* Show which sheet is being reconfigured */}
+            {activeReconfig && (
+              <div className="text-xs bg-blue-500/10 border border-blue-500/20 rounded-lg px-3 py-2">
+                <span className="text-muted-foreground">Reconfiguring: </span>
+                <span className="font-medium text-foreground">{activeReconfig.displayName}</span>
+                <span className="text-muted-foreground">
+                  {' '}({activeReconfig.syncMode === 'all' ? 'All Tabs' : `Tab: ${activeReconfig.sheetName}`})
+                </span>
+              </div>
+            )}
+            {/* Show current primary sheet if no specific reconfig target */}
+            {!activeReconfig && hasSheet && (
               <div className="text-xs text-muted-foreground bg-muted/40 rounded-lg px-3 py-2 border border-border">
                 Current: <span className="font-medium text-foreground">{integration.config.selectedFileName}</span>
                 {integration.config.syncMode === 'all'
@@ -516,7 +541,8 @@ export default function GoogleSheetsConnectFlow({ open, onClose, integration }) 
                   variant="outline"
                   className="w-full gap-2"
                   onClick={() => {
-                    // Clear picker state and go back to picker step to add another sheet
+                    // Clear all state and go back to picker step to add another sheet
+                    setActiveReconfig(null)
                     setSpreadsheetId('')
                     setSelectedFile('')
                     setAvailableSheets([])

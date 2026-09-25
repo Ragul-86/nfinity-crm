@@ -9,6 +9,7 @@ import { cn } from '@/utils/cn'
 
 import PageHeader from '@/components/common/PageHeader'
 import IntegrationCard from '@/components/integrations/IntegrationCard'
+import GoogleSheetsCard from '@/components/integrations/GoogleSheetsCard'
 import ConnectModal from '@/components/integrations/ConnectModal'
 import DisconnectDialog from '@/components/integrations/DisconnectDialog'
 import GoogleSheetsConnectFlow from '@/components/integrations/GoogleSheetsConnectFlow'
@@ -67,6 +68,8 @@ export default function Integrations() {
   // Google Sheets two-step flow (OAuth + Picker) — separate from standard ConnectModal
   const [gsheetsFlowOpen, setGsheetsFlowOpen]               = useState(false)
   const [gsheetsIntegration, setGsheetsIntegration]         = useState(null)
+  // reconfigSheet: the specific sheet being changed (null = adding a new one)
+  const [gsheetsReconfigSheet, setGsheetsReconfigSheet]     = useState(null)
   const [syncingId, setSyncingId]   = useState(null)
   const [testingId,  setTestingId]  = useState(null)
 
@@ -281,6 +284,30 @@ export default function Integrations() {
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {filteredIntegrations.map(intConfig => {
             const liveData = integrationMap[intConfig.id]
+
+            // Google Sheets gets a specialized multi-sheet card
+            if (intConfig.id === 'google_sheets') {
+              return (
+                <GoogleSheetsCard
+                  key={intConfig.id}
+                  config={intConfig}
+                  integration={liveData}
+                  readOnly={readOnly}
+                  onAddSheet={() => {
+                    setGsheetsReconfigSheet(null)
+                    setGsheetsIntegration(liveData || null)
+                    setGsheetsFlowOpen(true)
+                  }}
+                  onChangeSheet={(sheet) => {
+                    setGsheetsReconfigSheet(sheet)
+                    setGsheetsIntegration(liveData || null)
+                    setGsheetsFlowOpen(true)
+                  }}
+                  onDisconnect={() => handleDisconnect(intConfig)}
+                />
+              )
+            }
+
             return (
               <IntegrationCard
                 key={intConfig.id}
@@ -321,8 +348,9 @@ export default function Integrations() {
       {/* Google Sheets OAuth + Picker two-step flow */}
       <GoogleSheetsConnectFlow
         open={gsheetsFlowOpen}
-        onClose={() => { setGsheetsFlowOpen(false); setGsheetsIntegration(null) }}
+        onClose={() => { setGsheetsFlowOpen(false); setGsheetsIntegration(null); setGsheetsReconfigSheet(null) }}
         integration={gsheetsIntegration}
+        reconfigSheet={gsheetsReconfigSheet}
       />
 
       {/* Disconnect dialog */}
