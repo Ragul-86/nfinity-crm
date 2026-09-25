@@ -328,22 +328,37 @@ export default function GoogleSheetsCard({
         )}
       </div>
 
-      {/* ── Not connected → single connect button ── */}
-      {!integration && !readOnly && (
+      {/* ── Not connected / disconnected / failed → connect / reconnect button ──
+           Covers: no document, status=disconnected, status=failed, status=pending.
+           Note: status=expired is handled separately below (shows sheets + reconnect). ── */}
+      {!isConnected && !isExpired && !readOnly && (
         <Button className="w-full gap-2 h-8 text-sm" onClick={() => onAddSheet?.()}>
           <Plus className="w-3.5 h-3.5" />
-          Connect Google Sheets
+          {integration ? 'Reconnect Google Sheets' : 'Connect Google Sheets'}
         </Button>
       )}
 
-      {/* ── Token expired warning ── */}
-      {(isExpired || isSyncError) && (
+      {/* ── Token expired warning + reconnect button ── */}
+      {isExpired && (
+        <div className="space-y-2">
+          <div className="flex items-center gap-2 text-xs text-amber-600 bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-2">
+            <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+            Google token expired. Please reconnect to resume syncing.
+          </div>
+          {!readOnly && (
+            <Button className="w-full gap-2 h-8 text-sm" onClick={() => onAddSheet?.()}>
+              <Plus className="w-3.5 h-3.5" />
+              Reconnect Google Sheets
+            </Button>
+          )}
+        </div>
+      )}
+
+      {/* ── Sync error warning ── */}
+      {isSyncError && !isExpired && (
         <div className="flex items-center gap-2 text-xs text-amber-600 bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-2">
           <AlertCircle className="w-3.5 h-3.5 shrink-0" />
-          {isExpired
-            ? 'Google token expired. Use Sync on any sheet to reconnect.'
-            : 'Last sync encountered errors. Try syncing again.'
-          }
+          Last sync encountered errors. Try syncing again.
         </div>
       )}
 
