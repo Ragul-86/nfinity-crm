@@ -114,16 +114,15 @@ function SheetRow({ sheet, isSyncing, isRemoving, readOnly, onSync, onChange, on
       {/* Per-sheet actions */}
       {!readOnly && (
         <div className="flex items-center gap-0.5 shrink-0">
-          {/* Sync */}
+          {/* Sync — DISABLED: lead sync is currently turned off */}
           <Button
             variant="ghost"
             size="icon"
-            className="h-6 w-6"
-            title="Sync this sheet"
-            disabled={isSyncing || isRemoving}
-            onClick={onSync}
+            className="h-6 w-6 opacity-40 cursor-not-allowed"
+            title="Google Sheets lead sync is temporarily disabled"
+            disabled={true}
           >
-            <RefreshCw className={cn('w-3 h-3', isSyncing && 'animate-spin')} />
+            <RefreshCw className="w-3 h-3" />
           </Button>
 
           {/* Change (reconfigure) */}
@@ -362,6 +361,14 @@ export default function GoogleSheetsCard({
         </div>
       )}
 
+      {/* ── Sync disabled notice ── */}
+      {(isConnected || isSyncError) && (
+        <div className="flex items-center gap-2 text-xs text-amber-700 bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-2">
+          <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+          Google Sheets lead sync is temporarily disabled. Your connection and configuration are intact.
+        </div>
+      )}
+
       {/* ── Connected spreadsheets list ── */}
       {configuredSheets.length > 0 && (
         <div className="space-y-1.5">
@@ -396,15 +403,16 @@ export default function GoogleSheetsCard({
             <Plus className="w-3 h-3" />
             Connect Another Sheet
           </Button>
+          {/* Sync All — DISABLED: lead sync is currently turned off */}
           {configuredSheets.length > 1 && (
             <Button
               variant="ghost"
-              className="w-full gap-1.5 h-7 text-[10px] text-muted-foreground"
-              disabled={syncingAll}
-              onClick={handleSyncAll}
+              className="w-full gap-1.5 h-7 text-[10px] text-muted-foreground opacity-40 cursor-not-allowed"
+              disabled={true}
+              title="Google Sheets lead sync is temporarily disabled"
             >
-              <RefreshCw className={cn('w-3 h-3', syncingAll && 'animate-spin')} />
-              {syncingAll ? 'Syncing All…' : 'Sync All Sheets'}
+              <RefreshCw className="w-3 h-3" />
+              Sync All Sheets
             </Button>
           )}
         </div>

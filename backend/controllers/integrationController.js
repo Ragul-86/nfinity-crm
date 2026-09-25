@@ -1007,6 +1007,13 @@ exports.removeSheetConfig = async (req, res, next) => {
 // Returns { created, skipped, linked, errors[] }
 // ─────────────────────────────────────────────────────────────────────────────
 exports.syncGoogleSheet = async (req, res, next) => {
+  // ── DISABLED: Google Sheets lead sync is temporarily turned off ───────────────
+  // No Lead documents will be created. To re-enable, remove the early return below.
+  return res.status(503).json({
+    success: false,
+    message: 'Google Sheets lead sync is currently disabled',
+  });
+  // ─────────────────────────────────────────────────────────────────────────────
   try {
     const tf  = getTenantFilter(req);
     const doc = await Integration.findOne({ ...tf, provider: 'google_sheets' });
