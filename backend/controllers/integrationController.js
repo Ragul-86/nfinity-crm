@@ -882,7 +882,26 @@ exports.saveSheetConfig = async (req, res, next) => {
     if (!doc) return next(err('Google Sheets is not connected', 404));
 
     // ── Multi-sheet: upsert this sheet into config.spreadsheets array ──────
-    const existingSheets = Array.isArray(doc.config?.spreadsheets) ? [...doc.config.spreadsheets] : [];
+    //
+    // Bootstrap strategy:
+    //   1. If config.spreadsheets already exists → use it (multi-sheet already set up).
+    //   2. If config.spreadsheets is missing/empty but config.spreadsheetId exists →
+    //      the integration was saved with old single-sheet code.  Reconstruct the
+    //      first entry from the legacy fields so we don't silently drop it when a
+    //      second sheet is connected.
+    //   3. Otherwise → start with an empty array (fresh connection).
+    const existingSheets =
+      Array.isArray(doc.config?.spreadsheets) && doc.config.spreadsheets.length > 0
+        ? [...doc.config.spreadsheets]
+        : doc.config?.spreadsheetId
+          ? [{
+              spreadsheetId: String(doc.config.spreadsheetId),
+              displayName:   doc.config.selectedFileName || String(doc.config.spreadsheetId),
+              syncMode:      doc.config.syncMode  || 'single',
+              sheetName:     doc.config.sheetName || '',
+              updatedAt:     doc.updatedAt        || new Date(),
+            }]
+          : [];
     const newEntry = {
       spreadsheetId: String(spreadsheetId).trim(),
       displayName:   selectedFileName ? String(selectedFileName).trim() : String(spreadsheetId).trim(),
