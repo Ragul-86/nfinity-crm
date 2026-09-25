@@ -16,7 +16,7 @@
 import React, { useState, useEffect, useCallback } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { ExternalLink, FolderOpen, RefreshCw, CheckCircle2, AlertTriangle, BarChart3 } from 'lucide-react'
+import { ExternalLink, FolderOpen, RefreshCw, CheckCircle2, AlertTriangle, BarChart3, Plus } from 'lucide-react'
 import toast from 'react-hot-toast'
 import api from '@/services/api'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -470,13 +470,7 @@ export default function GoogleSheetsConnectFlow({ open, onClose, integration }) 
 
         {/* ── Step 4: Connection Complete ───────────────────────────────── */}
         {step === 'complete' && (() => {
-          // Build the deep-link URL for this specific sheet / tab dashboard
-          const dashName  = syncMode === 'single' ? sheetName : selectedFile
-          const streamKey = encodeURIComponent(dashName)
-          const params    = new URLSearchParams({ name: dashName })
-          if (syncMode === 'single' && sheetName) params.set('sheetName', sheetName)
-          const dashUrl = `/leads/sources/sheet_tab/${streamKey}?${params}`
-
+          const dashName = syncMode === 'single' ? sheetName : selectedFile
           return (
             <div className="space-y-5 pt-1 text-center">
               <div className="flex flex-col items-center gap-2">
@@ -513,12 +507,29 @@ export default function GoogleSheetsConnectFlow({ open, onClose, integration }) 
               <div className="flex flex-col gap-2">
                 <Button
                   className="w-full gap-2"
-                  onClick={() => { onClose(); navigate(dashUrl) }}
+                  onClick={() => { onClose(); navigate('/leads/dashboard') }}
                 >
                   <BarChart3 className="w-4 h-4" />
                   Go to Dashboard
                 </Button>
-                <Button variant="outline" className="w-full" onClick={onClose}>
+                <Button
+                  variant="outline"
+                  className="w-full gap-2"
+                  onClick={() => {
+                    // Clear picker state and go back to picker step to add another sheet
+                    setSpreadsheetId('')
+                    setSelectedFile('')
+                    setAvailableSheets([])
+                    setSheetName('')
+                    setSyncMode('single')
+                    setVerifyError('')
+                    setStep('picker')
+                  }}
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  Add Another Sheet
+                </Button>
+                <Button variant="ghost" className="w-full text-sm text-muted-foreground" onClick={onClose}>
                   Done
                 </Button>
               </div>

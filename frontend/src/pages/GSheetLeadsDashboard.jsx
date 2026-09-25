@@ -1,149 +1,59 @@
 /**
  * GSheetLeadsDashboard.jsx
  * ─────────────────────────────────────────────────────────────────────────────
- * Google Sheet context selector + full Sales Pipeline / Kanban UI.
- *
- * Architecture:
- *   1. Google Sheet selector at the top (reads from /api/integrations/google_sheets/contexts)
- *   2. Selected sheet → auto-resolves the matching Pipeline via /api/leads/pipeline-breakdown
- *   3. Renders the existing <SalesPipeline> component with:
- *        sourceFilter = { sheetName }   — scopes leads to the selected tab
- *        initialPipelineId              — auto-selects the tab's pipeline
- *   4. All existing pipeline functionality is preserved: drag-drop, actions,
- *      KPI bar, search, filters, export, bulk ops, modals.
+ * Two-selector context bar (Google Sheet + Sheet Tab) + full SalesPipeline kanban.
  *
  * Route:  /leads/dashboard
- * URL params (for shareability / deep-linking):
- *   ?spreadsheetId=XXXX        — display-only, drives the selector dropdown
- *   ?sheetName=Performance%20Marketer  — tab filter (absent = all Google Sheets tabs)
+ * URL params:
+ *   ?spreadsheetId=XXXX              — selected Google Sheet (drives tab dropdown)
+ *   ?sheetName=Performance%20Marketer — selected tab (scopes all data below)
  *
  * Filter strategy:
- *   API calls use sheetName + externalSource=all_sheets.
- *   spreadsheetId is NOT sent to the backend because existing leads have
- *   spreadsheetId: null (synced before the field was added to the Lead model).
+ *   Backend calls use  sheetName + externalSource=all_sheets.
+ *   spreadsheetId is NOT sent to the API — existing leads have spreadsheetId: null
+ *   (synced before the field was added).  spreadsheetId only drives the UI selector.
  *
- * Tenant isolation: sheetName comes from URL but the backend always AND-s it
- *   with tenantId from the JWT — never trusted from the client.
+ * Tenant isolation:
+ *   sheetName comes from URL but the backend always AND-s it with tenantId from JWT.
  */
 
-import { useState, useEffect, useMemo, useCallback } from 'react'
+import { useEffect, useMemo, useCallback } from 'react'
 import { useSearchParams, Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import {
-  FileSpreadsheet, Layers, TableProperties, SlidersHorizontal,
-} from 'lucide-react'
+import { FileSpreadsheet, TableProperties, AlertCircle } from 'lucide-react'
 import api from '@/services/api'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select'
 import SalesPipeline from '@/pages/SalesPipeline'
 
-// ── Sheet / Tab Selector ───────────────────────────────────────────────────
-// Same selector used in the previous dashboard version.
-function SheetSelector({ contexts, spreadsheetId, sheetName, onSelect }) {
-  const { spreadsheets = [], isConnected, legacyLeadsCount = 0 } = contexts || {}
-
-  if (!contexts) {
-    return <Skeleton className="h-9 w-72" />
-  }
-
-  if (!isConnected && spreadsheets.length === 0 && legacyLeadsCount === 0) {
-    return (
-      <div className="flex items-center gap-2 px-3 py-2 rounded-lg border border-dashed border-border text-sm text-muted-foreground">
-        <FileSpreadsheet className="w-4 h-4" />
-        No Google Sheet connected.{' '}
-        <Link to="/settings/integrations" className="text-primary underline underline-offset-2">
-          Connect one →
-        </Link>
-      </div>
-    )
-  }
-
-  // Build flat list of selector options
-  const options = []
-
-  for (const ss of spreadsheets) {
-    // All-Tabs option (when present)
-    if (ss.tabs.some(t => t.isAllTabs)) {
-      const allTabsEntry = ss.tabs.find(t => t.isAllTabs)
-      options.push({
-        value:         `${ss.spreadsheetId}||`,
-        label:         `${ss.displayName} — All Tabs`,
-        spreadsheetId: ss.spreadsheetId,
-        sheetName:     null,
-        count:         allTabsEntry.count,
-        isSpreadsheet: true,
-      })
-    }
-    // Individual tabs
-    for (const tab of ss.tabs) {
-      if (tab.isAllTabs) continue
-      options.push({
-        value:         `${ss.spreadsheetId}||${tab.sheetName}`,
-        label:         ss.tabs.some(t => t.isAllTabs)
-                         ? `${ss.displayName} › ${tab.sheetName}`
-                         : tab.sheetName,
-        spreadsheetId: ss.spreadsheetId,
-        sheetName:     tab.sheetName,
-        count:         tab.count,
-        isSpreadsheet: false,
-      })
-    }
-    // Spreadsheet with multiple tabs but no isAllTabs → add an All-Tabs option
-    if (!ss.tabs.some(t => t.isAllTabs) && ss.tabs.length > 1) {
-      options.unshift({
-        value:         `${ss.spreadsheetId}||`,
-        label:         `${ss.displayName} — All Tabs`,
-        spreadsheetId: ss.spreadsheetId,
-        sheetName:     null,
-        count:         ss.totalLeads,
-        isSpreadsheet: true,
-      })
-    }
-  }
-
-  // Legacy leads not claimed by a connected spreadsheet
-  if (legacyLeadsCount > 0 && spreadsheets.length === 0) {
-    options.push({
-      value:         '__legacy__||',
-      label:         `Google Sheet Leads (${legacyLeadsCount})`,
-      spreadsheetId: null,
-      sheetName:     null,
-      count:         legacyLeadsCount,
-      isSpreadsheet: true,
-    })
-  }
-
-  const currentValue = spreadsheetId
-    ? `${spreadsheetId}||${sheetName || ''}`
-    : (options[0]?.value || '')
-
-  const handleChange = val => {
-    if (val === '__legacy__||') {
-      onSelect({ spreadsheetId: null, sheetName: null })
-      return
-    }
-    const [sid, sname] = val.split('||')
-    onSelect({ spreadsheetId: sid || null, sheetName: sname || null })
-  }
+// ── Google Sheet dropdown ──────────────────────────────────────────────────
+function SpreadsheetDropdown({ spreadsheets, value, onChange, loading }) {
+  if (loading) return <Skeleton className="h-9 w-56" />
+  if (!spreadsheets?.length) return null
 
   return (
-    <div className="flex items-center gap-2">
-      <FileSpreadsheet className="w-4 h-4 text-green-600 shrink-0" />
-      <Select value={currentValue} onValueChange={handleChange}>
-        <SelectTrigger className="h-9 min-w-[240px] max-w-sm text-sm font-medium">
-          <SelectValue placeholder="Select Google Sheet…" />
+    <div className="flex flex-col gap-0.5">
+      <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground px-0.5">
+        Google Sheet
+      </span>
+      <Select
+        value={value || ''}
+        onValueChange={onChange}
+      >
+        <SelectTrigger className="h-9 min-w-[200px] max-w-[280px] text-sm font-medium">
+          <SelectValue placeholder="Select spreadsheet…" />
         </SelectTrigger>
         <SelectContent>
-          {options.map(opt => (
-            <SelectItem key={opt.value} value={opt.value}>
-              <span className="flex items-center gap-2">
-                {opt.isSpreadsheet
-                  ? <Layers className="w-3 h-3 text-muted-foreground shrink-0" />
-                  : <TableProperties className="w-3 h-3 text-muted-foreground shrink-0" />
-                }
-                <span className="truncate">{opt.label}</span>
-                <span className="text-[10px] text-muted-foreground ml-auto pl-2 shrink-0">
-                  {opt.count}
+          {spreadsheets.map(ss => (
+            <SelectItem
+              key={ss.spreadsheetId ?? '__legacy__'}
+              value={ss.spreadsheetId ?? '__legacy__'}
+            >
+              <span className="flex items-center gap-2 w-full">
+                <FileSpreadsheet className="w-3.5 h-3.5 text-green-600 shrink-0" />
+                <span className="truncate flex-1">{ss.displayName}</span>
+                <span className="text-[10px] text-muted-foreground shrink-0 tabular-nums ml-2">
+                  {ss.totalLeads}
                 </span>
               </span>
             </SelectItem>
@@ -154,122 +64,198 @@ function SheetSelector({ contexts, spreadsheetId, sheetName, onSelect }) {
   )
 }
 
-// ── Main page ──────────────────────────────────────────────────────────────
+// ── Sheet Tab dropdown ─────────────────────────────────────────────────────
+function TabDropdown({ tabs, value, onChange, loading }) {
+  if (loading) return <Skeleton className="h-9 w-44" />
+  if (!tabs?.length) return null
+
+  const ALL_VALUE = '__all__'
+  const currentValue = value || ALL_VALUE
+
+  return (
+    <div className="flex flex-col gap-0.5">
+      <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground px-0.5">
+        Sheet Tab
+      </span>
+      <Select
+        value={currentValue}
+        onValueChange={v => onChange(v === ALL_VALUE ? null : v)}
+      >
+        <SelectTrigger className="h-9 min-w-[160px] max-w-[240px] text-sm">
+          <SelectValue placeholder="All Tabs" />
+        </SelectTrigger>
+        <SelectContent>
+          {tabs.map(tab => (
+            <SelectItem
+              key={tab.sheetName ?? ALL_VALUE}
+              value={tab.sheetName ?? ALL_VALUE}
+            >
+              <span className="flex items-center gap-2 w-full">
+                <TableProperties className="w-3 h-3 text-muted-foreground shrink-0" />
+                <span className="truncate flex-1">{tab.label || tab.sheetName || 'All Tabs'}</span>
+                <span className="text-[10px] text-muted-foreground shrink-0 tabular-nums ml-2">
+                  {tab.count}
+                </span>
+              </span>
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+  )
+}
+
+// ── Main Dashboard ─────────────────────────────────────────────────────────
 export default function GSheetLeadsDashboard() {
   const [searchParams, setSearchParams] = useSearchParams()
 
-  // spreadsheetId drives the selector dropdown display only (not sent to API)
+  // URL state — spreadsheetId is display-only; sheetName is the actual API filter
   const spreadsheetId = searchParams.get('spreadsheetId') || null
   const sheetName     = searchParams.get('sheetName')     || null
 
-  // ── Handle selector change ─────────────────────────────────────────────
-  const handleSelect = useCallback(({ spreadsheetId: sid, sheetName: sname }) => {
-    const next = {}
-    if (sid)   next.spreadsheetId = sid
-    if (sname) next.sheetName     = sname
-    setSearchParams(next, { replace: true })
-  }, [setSearchParams])
-
-  // ── 1. Google Sheet contexts for the selector ──────────────────────────
-  const { data: contextsData } = useQuery({
+  // ── 1. Load all Google Sheet contexts (spreadsheets + tabs) ───────────────
+  const { data: contextsData, isLoading: loadingContexts } = useQuery({
     queryKey: ['gsheet-contexts'],
     queryFn:  () => api.get('/integrations/google_sheets/contexts').then(r => r.data.data),
     staleTime: 60_000,
   })
 
-  // Auto-select first available context on initial load (when URL has no params)
-  useEffect(() => {
-    if (!spreadsheetId && contextsData?.spreadsheets?.length > 0) {
-      const first = contextsData.spreadsheets[0]
-      if (!first?.spreadsheetId) return
-      const nextParams = { spreadsheetId: first.spreadsheetId }
-      // For single-tab mode also set sheetName so the filter scopes to the tab
-      if (!first.tabs.some(t => t.isAllTabs)) {
-        const firstRealTab = first.tabs.find(t => !t.isAllTabs)
-        if (firstRealTab?.sheetName) nextParams.sheetName = firstRealTab.sheetName
-      }
-      setSearchParams(nextParams, { replace: true })
-    }
-  }, [contextsData, spreadsheetId, setSearchParams])
+  const spreadsheets = contextsData?.spreadsheets || []
+  const isConnected  = contextsData?.isConnected   ?? false
 
-  // ── 2. Determine which pipeline belongs to the selected sheet ──────────
-  // /api/leads/pipeline-breakdown returns pipelines sorted by lead count.
-  // We pick the first (dominant) pipeline to auto-select in SalesPipeline.
-  const breakdownParams = useMemo(() => {
-    const p = new URLSearchParams()
+  // ── 2. Resolve selected spreadsheet object ────────────────────────────────
+  const selectedSS = useMemo(() => {
+    if (!spreadsheets.length) return null
+    if (spreadsheetId) {
+      return spreadsheets.find(ss => (ss.spreadsheetId ?? '__legacy__') === spreadsheetId)
+        || spreadsheets[0]
+    }
+    return spreadsheets[0]
+  }, [spreadsheets, spreadsheetId])
+
+  const tabs = selectedSS?.tabs || []
+
+  // ── 3. Auto-select first spreadsheet + tab on initial load ────────────────
+  useEffect(() => {
+    if (!contextsData || !spreadsheets.length) return
+    const first = spreadsheets[0]
+    if (!first) return
+    const params = Object.fromEntries(searchParams)
+
+    if (!spreadsheetId) {
+      // No spreadsheet selected yet — auto-select first
+      params.spreadsheetId = first.spreadsheetId || ''
+      // Auto-select tab if spreadsheet has exactly one non-"All Tabs" tab
+      const realTabs = (first.tabs || []).filter(t => !t.isAllTabs)
+      if (realTabs.length === 1 && !params.sheetName) {
+        params.sheetName = realTabs[0].sheetName || ''
+      }
+      setSearchParams(params, { replace: true })
+    }
+  }, [contextsData]) // eslint-disable-line
+
+  // ── 4. Handlers ───────────────────────────────────────────────────────────
+  const handleSpreadsheetChange = useCallback(sid => {
+    const ss = spreadsheets.find(s => (s.spreadsheetId ?? '__legacy__') === sid)
+    const next = { spreadsheetId: ss?.spreadsheetId || '' }
+    // Auto-select tab if the new spreadsheet has exactly one real tab
+    const realTabs = (ss?.tabs || []).filter(t => !t.isAllTabs)
+    if (realTabs.length === 1) next.sheetName = realTabs[0].sheetName || ''
+    // Otherwise: don't carry over the old sheetName (it may not exist in new SS)
+    setSearchParams(next, { replace: true })
+  }, [spreadsheets, setSearchParams])
+
+  const handleTabChange = useCallback(sname => {
+    const next = {}
+    if (spreadsheetId) next.spreadsheetId = spreadsheetId
+    if (sname)         next.sheetName     = sname
+    setSearchParams(next, { replace: true })
+  }, [spreadsheetId, setSearchParams])
+
+  // ── 5. Pipeline breakdown — determines which pipeline to auto-select ───────
+  const breakdownQS = useMemo(() => {
+    const p = new URLSearchParams({ externalSource: 'all_sheets' })
     if (sheetName) p.set('sheetName', sheetName)
-    p.set('externalSource', 'all_sheets')
     return p.toString()
   }, [sheetName])
 
   const { data: pipelineBreakdown } = useQuery({
-    queryKey: ['gsheet-pipeline-breakdown', sheetName],
-    queryFn:  () => api.get(`/leads/pipeline-breakdown?${breakdownParams}`).then(r => r.data.data),
+    queryKey:  ['gsheet-pipeline-breakdown', sheetName],
+    queryFn:   () => api.get(`/leads/pipeline-breakdown?${breakdownQS}`).then(r => r.data.data),
     staleTime: 30_000,
   })
 
-  // The pipeline ID to auto-select (top pipeline for the selected sheet)
+  // Top pipeline for the selected sheet context
   const autoPipelineId = pipelineBreakdown?.[0]?.pipelineId?.toString() || null
 
-  // ── Source filter passed to SalesPipeline ─────────────────────────────
+  // ── 6. Source filter passed to SalesPipeline ──────────────────────────────
   // sheetName may be null (= All Tabs) — the backend handles both cases.
   const sourceFilter = useMemo(() => ({
     sheetName: sheetName || null,
   }), [sheetName])
 
-  // ── Context label for the info strip ──────────────────────────────────
-  const contextLabel = useMemo(() => {
-    if (!contextsData?.spreadsheets?.length) return null
-    const ss = contextsData.spreadsheets.find(s => s.spreadsheetId === spreadsheetId)
-    if (!ss) return sheetName || 'All Google Sheets Leads'
-    return sheetName
-      ? `${ss.displayName} › ${sheetName}`
-      : `${ss.displayName} — All Tabs`
-  }, [contextsData, spreadsheetId, sheetName])
+  // ── Not connected warning ──────────────────────────────────────────────────
+  const noSheets = !loadingContexts && !spreadsheets.length
 
   return (
     <div className="flex flex-col h-full gap-0">
 
-      {/* ── Google Sheet context selector strip ── */}
-      <div className="flex flex-col sm:flex-row sm:items-center gap-3 mb-4 p-3 bg-card border border-border rounded-xl">
-        <div className="flex items-center gap-3 flex-wrap flex-1">
-          <div>
-            <p className="text-[11px] text-muted-foreground font-medium mb-1 uppercase tracking-wide">
-              Google Sheet
-            </p>
-            <SheetSelector
-              contexts={contextsData}
-              spreadsheetId={spreadsheetId}
-              sheetName={sheetName}
-              onSelect={handleSelect}
-            />
+      {/* ── Context selector bar ─────────────────────────────────────────── */}
+      <div className="flex flex-col sm:flex-row sm:items-end gap-x-4 gap-y-2 mb-4 p-3 bg-card border border-border rounded-xl">
+
+        {noSheets ? (
+          /* No Google Sheet connected at all */
+          <div className="flex items-center gap-2 py-1 text-sm text-muted-foreground">
+            <FileSpreadsheet className="w-4 h-4 text-muted-foreground" />
+            No Google Sheet connected.{' '}
+            <Link to="/settings/integrations" className="text-primary underline underline-offset-2 font-medium">
+              Connect one →
+            </Link>
           </div>
+        ) : (
+          <div className="flex items-end gap-3 flex-wrap flex-1">
+            {/* ── Google Sheet selector ── */}
+            <SpreadsheetDropdown
+              spreadsheets={spreadsheets}
+              value={spreadsheetId ?? selectedSS?.spreadsheetId ?? '__legacy__'}
+              onChange={handleSpreadsheetChange}
+              loading={loadingContexts}
+            />
 
-          {contextsData && !contextsData.isConnected && (
-            <div className="text-xs text-amber-500 bg-amber-500/10 border border-amber-500/20 px-3 py-1.5 rounded-lg">
-              Google Sheets not connected.{' '}
-              <Link to="/settings/integrations" className="underline underline-offset-2">
-                Connect →
-              </Link>
-            </div>
-          )}
-        </div>
+            {/* ── Separator ── */}
+            {tabs.length > 0 && (
+              <span className="text-muted-foreground text-xl pb-1.5 hidden sm:block">›</span>
+            )}
 
-        {/* Context breadcrumb */}
-        {contextLabel && (
-          <div className="flex items-center gap-1.5 text-xs text-muted-foreground bg-muted/50 px-3 py-1.5 rounded-lg shrink-0">
-            <SlidersHorizontal className="w-3.5 h-3.5 shrink-0" />
-            <span>Showing:</span>
-            <span className="font-medium text-foreground truncate max-w-[200px]">{contextLabel}</span>
+            {/* ── Sheet Tab selector ── */}
+            {tabs.length > 0 && (
+              <TabDropdown
+                tabs={tabs}
+                value={sheetName}
+                onChange={handleTabChange}
+                loading={loadingContexts}
+              />
+            )}
+
+            {/* ── Sync warning ── */}
+            {contextsData && !isConnected && spreadsheets.length > 0 && (
+              <div className="flex items-center gap-1.5 text-xs text-amber-600 bg-amber-500/10 border border-amber-500/20 rounded-lg px-2.5 py-1.5 mb-0.5">
+                <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                Sync paused.{' '}
+                <Link to="/settings/integrations" className="underline underline-offset-2 font-medium">
+                  Reconnect →
+                </Link>
+              </div>
+            )}
           </div>
         )}
       </div>
 
-      {/* ── Full Pipeline / Kanban — the existing SalesPipeline component ── */}
+      {/* ── Full Sales Pipeline / Kanban ─────────────────────────────────── */}
       {/*
-        sourceFilter → adds sheetName + externalSource=all_sheets to lead query
-        initialPipelineId → auto-selects the tab's matching pipeline
-        Both props are optional — SalesPipeline works unchanged when they're null.
+        sourceFilter → scopes lead query to the selected sheet tab (+ externalSource=all_sheets)
+        initialPipelineId → auto-selects the pipeline that has the most leads for this context
+        Both props are optional: SalesPipeline works unchanged when both are null.
       */}
       <SalesPipeline
         sourceFilter={sourceFilter}
