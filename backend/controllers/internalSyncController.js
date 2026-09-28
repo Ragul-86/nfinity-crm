@@ -179,7 +179,9 @@ async function resolvePipeline(tenantId, { adId, metaFormId, sheetName, source }
 
 // ─── Core: sync one tab from a spreadsheet for a given tenant ────────────────
 async function syncTab(accessToken, tenantId, spreadsheetId, tabName) {
-  const range    = encodeURIComponent(`${tabName}!A1:Z1000`);
+  // Passing only the sheet name as the range returns ALL rows that contain data.
+  // No row cap — Google Sheets API handles up to 10M cells per request.
+  const range    = encodeURIComponent(tabName);
   const response = await callSheetsApi(accessToken, `/spreadsheets/${spreadsheetId}/values/${range}`);
 
   if (response.status === 401) return { status: 'auth_expired', created: 0, skipped: 0, deletedSourceSkipped: 0, errors: [] };

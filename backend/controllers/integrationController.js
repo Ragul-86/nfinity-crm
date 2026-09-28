@@ -1093,8 +1093,9 @@ exports.syncGoogleSheet = async (req, res, next) => {
 
     // ── Process each tab (one iteration for 'single', all tabs for 'all') ───
     for (const tabName of tabsToSync) {
-      // Fetch up to 1000 rows for this tab
-      const range     = encodeURIComponent(`${tabName}!A1:Z1000`);
+      // Fetch ALL rows for this tab — passing only the sheet name as the range
+      // returns every row that contains data (Google Sheets API handles up to 10M cells).
+      const range     = encodeURIComponent(tabName);
       const sheetsRes = await callSheetsApi(accessToken, `/spreadsheets/${spreadsheetId}/values/${range}`);
 
       if (sheetsRes.status === 401) {
