@@ -73,6 +73,7 @@ const systemHealthRoutes    = require('./routes/systemHealth');
 const gsheetWebhookRoutes   = require('./routes/gsheetWebhook');
 const pipelineDefRoutes     = require('./routes/pipelineDefs');
 const leadStreamRoutes      = require('./routes/leadStreams');
+const internalSyncRoutes    = require('./routes/internalSync');
 
 const app = express();
 
@@ -309,8 +310,10 @@ app.use('/api/search',      searchRoutes);
 app.use('/api/ai',          aiRoutes);
 app.use('/api/portal',      clientPortalRoutes);
 app.use('/api/health',         systemHealthRoutes);
-// Google Sheet → CRM lead sync (public, HMAC-secured)
+// Google Sheet → CRM lead sync (public, HMAC-secured) — DISABLED, returns 410
 app.use('/api/gsheet-webhook', gsheetWebhookRoutes);
+// Internal scheduler endpoints (secret-secured, no JWT)
+app.use('/api/internal', internalSyncRoutes);
 // Flexible pipeline definitions (tenant-scoped, requires auth)
 app.use('/api/pipeline-defs', pipelineDefRoutes);
 // Lead Source Stream dashboards (tenant-scoped, requires auth)

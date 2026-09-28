@@ -1007,13 +1007,6 @@ exports.removeSheetConfig = async (req, res, next) => {
 // Returns { created, skipped, linked, errors[] }
 // ─────────────────────────────────────────────────────────────────────────────
 exports.syncGoogleSheet = async (req, res, next) => {
-  // ── DISABLED: Google Sheets lead sync is temporarily turned off ───────────────
-  // No Lead documents will be created. To re-enable, remove the early return below.
-  return res.status(503).json({
-    success: false,
-    message: 'Google Sheets lead sync is currently disabled',
-  });
-  // ─────────────────────────────────────────────────────────────────────────────
   try {
     const tf  = getTenantFilter(req);
     const doc = await Integration.findOne({ ...tf, provider: 'google_sheets' });
@@ -1094,7 +1087,8 @@ exports.syncGoogleSheet = async (req, res, next) => {
     }
 
     const Lead = require('../models/Lead');
-    let created = 0, skipped = 0, linked = 0;
+    const DeletedLeadSource = require('../models/DeletedLeadSource');
+    let created = 0, skipped = 0, linked = 0, deletedSourceSkipped = 0;
     const errors = [];
 
     // ── Process each tab (one iteration for 'single', all tabs for 'all') ───
@@ -1202,9 +1196,18 @@ exports.syncGoogleSheet = async (req, res, next) => {
           // ── Source: normalise platform column value ───────────────────────
           const source = normaliseSrcGS(getVal('source')); // 'platform' → 'source' via GSHEET_HEADER_MAP
 
-          // Step 1 — Primary: exact external key match → skip
+          // Step 1 — Primary: exact external key match → skip (already in CRM)
           const byKey = await Lead.findOne({ tenantId: tf.tenantId, externalLeadId, externalSource });
           if (byKey) { skipped++; continue; }
+
+          // Step 1b — Tombstone check: this lead was previously deleted from CRM
+          // Never recreate a lead that the user explicitly deleted
+          const tombstone = await DeletedLeadSource.findOne({
+            tenantId: tf.tenantId,
+            externalSource,
+            externalLeadId,
+          });
+          if (tombstone) { deletedSourceSkipped++; continue; }
 
           // Step 2 — Secondary: phone match
           if (phone) {
@@ -1286,14 +1289,15 @@ exports.syncGoogleSheet = async (req, res, next) => {
       tenantId:    tf.tenantId,
       resourceId:  'google_sheets',
       resourceType:'integration',
-      details:     { spreadsheetId, syncMode, tabs: tabsToSync, created, skipped, linked, errors: errors.length },
+      details:     { spreadsheetId, syncMode, tabs: tabsToSync, created, skipped, linked, deletedSourceSkipped, errors: errors.length },
       req,
     });
 
     const message = `Sync complete — ${created} new, ${skipped} skipped, ${linked} linked` +
+      (deletedSourceSkipped ? `, ${deletedSourceSkipped} previously-deleted skipped` : '') +
       (errors.length ? `, ${errors.length} error(s)` : '');
 
-    res.json({ success: true, created, skipped, linked, errors, message });
+    res.json({ success: true, created, skipped, linked, deletedSourceSkipped, errors, message });
   } catch (e) { next(e); }
 };
 

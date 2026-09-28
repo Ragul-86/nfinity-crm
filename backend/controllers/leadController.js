@@ -151,6 +151,16 @@ exports.deleteLead = async (req, res, next) => {
     const lead = await Lead.findOneAndDelete({ _id: req.params.id, ...getTenantFilter(req) });
     if (!lead) return next(err('Lead not found', 404));
 
+    // ── Tombstone: prevent Google Sheets sync from re-importing this row ──────
+    if (lead.externalSource === 'google_sheets' && lead.externalLeadId) {
+      const DeletedLeadSource = require('../models/DeletedLeadSource');
+      await DeletedLeadSource.findOneAndUpdate(
+        { tenantId: lead.tenantId, externalSource: lead.externalSource, externalLeadId: lead.externalLeadId },
+        { $setOnInsert: { tenantId: lead.tenantId, externalSource: lead.externalSource, spreadsheetId: lead.spreadsheetId || '', sheetName: lead.sheetName || '', externalLeadId: lead.externalLeadId, deletedBy: req.user.id, deletedAt: new Date() } },
+        { upsert: true }
+      ).catch(() => {}); // fire-and-forget — never block the delete
+    }
+
     // Clean up related data
     await Promise.all([
       FollowUp.deleteMany({ lead: lead._id }),
@@ -402,6 +412,24 @@ exports.bulkAction = async (req, res, next) => {
       case 'delete':
         if (!['super_admin', 'admin', 'manager'].includes(req.user.role)) {
           return next(err('Not authorized to bulk delete', 403));
+        }
+        // Create tombstones for any Google Sheets-sourced leads before deleting
+        {
+          const DeletedLeadSource = require('../models/DeletedLeadSource');
+          const gsLeads = await Lead.find(
+            { _id: { $in: ids }, ...getTenantFilter(req), externalSource: 'google_sheets', externalLeadId: { $exists: true, $ne: '' } },
+            { tenantId: 1, externalSource: 1, spreadsheetId: 1, sheetName: 1, externalLeadId: 1 }
+          ).lean();
+          if (gsLeads.length) {
+            const tombstones = gsLeads.map(l => ({
+              updateOne: {
+                filter: { tenantId: l.tenantId, externalSource: l.externalSource, externalLeadId: l.externalLeadId },
+                update: { $setOnInsert: { tenantId: l.tenantId, externalSource: l.externalSource, spreadsheetId: l.spreadsheetId || '', sheetName: l.sheetName || '', externalLeadId: l.externalLeadId, deletedBy: req.user.id, deletedAt: new Date() } },
+                upsert: true,
+              },
+            }));
+            await DeletedLeadSource.bulkWrite(tombstones).catch(() => {});
+          }
         }
         result = await Lead.deleteMany(filter);
         await Promise.all([
