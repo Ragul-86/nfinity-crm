@@ -19,6 +19,8 @@ const DeletedLeadSource = require('../models/DeletedLeadSource');
 const Pipeline        = require('../models/Pipeline');
 const PipelineMapping = require('../models/PipelineMapping');
 const { decryptFields, encryptFields } = require('../utils/encryption');
+const { createDriveWatch, stopDriveWatch } = require('../utils/driveWatch');
+const { isValidPhone, resolvePhone } = require('../utils/phoneUtils');
 
 // ─── Sensitive fields for google_sheets provider ──────────────────────────────
 const GS_SENSITIVE = ['accessToken', 'refreshToken'];
@@ -184,34 +186,39 @@ async function syncTab(accessToken, tenantId, spreadsheetId, tabName) {
   const range    = encodeURIComponent(tabName);
   const response = await callSheetsApi(accessToken, `/spreadsheets/${spreadsheetId}/values/${range}`);
 
-  if (response.status === 401) return { status: 'auth_expired', created: 0, skipped: 0, deletedSourceSkipped: 0, errors: [] };
+  if (response.status === 401) return { status: 'auth_expired', created: 0, skipped: 0, deletedSourceSkipped: 0, blankRows: 0, errors: [] };
   if (response.status !== 200) {
     const msg = response.body?.error?.message || `HTTP ${response.status}`;
-    return { status: 'error', error: msg, created: 0, skipped: 0, deletedSourceSkipped: 0, errors: [{ tab: tabName, reason: msg }] };
+    return { status: 'error', error: msg, created: 0, skipped: 0, deletedSourceSkipped: 0, blankRows: 0, errors: [{ tab: tabName, reason: msg }] };
   }
 
   const rows = response.body.values || [];
-  if (rows.length < 2) return { status: 'ok', created: 0, skipped: 0, deletedSourceSkipped: 0, errors: [] };
+  if (rows.length < 2) return { status: 'ok', created: 0, skipped: 0, deletedSourceSkipped: 0, blankRows: 0, errors: [] };
 
   const originalHeaders = rows[0];
   const headers         = rows[0].map(normalizeHeader);
   const fieldMap        = {};
   let idColIndex        = -1;
+  let whatsappColIndex  = -1; // fallback phone source when phone_number column is invalid
 
   for (let c = 0; c < headers.length; c++) {
     const h = headers[c];
     if (GSHEET_ID_HEADERS.has(h)) {
       if (idColIndex === -1) idColIndex = c;
+    } else if (h === 'whatsapp number') {
+      // Track whatsapp_number as a phone fallback but do NOT add it to fieldMap —
+      // that would prevent phone_number (which comes after it) from being mapped.
+      if (whatsappColIndex === -1) whatsappColIndex = c;
     } else if (GSHEET_HEADER_MAP[h] && fieldMap[GSHEET_HEADER_MAP[h]] === undefined) {
       fieldMap[GSHEET_HEADER_MAP[h]] = c;
     }
   }
 
-  if (fieldMap.name === undefined) {
-    return { status: 'ok', created: 0, skipped: 0, deletedSourceSkipped: 0, errors: [{ tab: tabName, reason: 'No "Name" column found — tab skipped' }] };
-  }
+  // Track whether the tab has a dedicated Name column so we can generate fallback names.
+  // We no longer skip tabs that lack a Name column — every non-blank row gets imported.
+  const hasNameCol = fieldMap.name !== undefined; // eslint-disable-line no-unused-vars
 
-  let created = 0, skipped = 0, deletedSourceSkipped = 0;
+  let created = 0, skipped = 0, deletedSourceSkipped = 0, blankRows = 0;
   const errors = [];
 
   for (let i = 1; i < rows.length; i++) {
@@ -224,11 +231,27 @@ async function syncTab(accessToken, tenantId, spreadsheetId, tabName) {
         return idx !== undefined ? String(row[idx] || '').trim() : '';
       };
 
-      const name = getVal('name');
-      if (!name) continue;
+      // ── Blank row: skip rows where every cell is empty / whitespace ─────────
+      const isBlankRow = row.every(cell => !String(cell || '').trim());
+      if (isBlankRow) { blankRows++; continue; }
 
-      const phone           = getVal('phone');
+      // ── Resolve phone first so it is available for the name fallback ─────────
+      // Resolve phone: use phone_number column if it contains ≥7 digits;
+      // fall back to whatsapp_number column if available and valid;
+      // otherwise '' — falsy, so no DB phone-match query runs.
+      const phoneRaw        = getVal('phone');
+      const waRaw           = whatsappColIndex !== -1 ? String(row[whatsappColIndex] || '').trim() : '';
+      const phone           = resolvePhone(phoneRaw, waRaw);
       const email           = getVal('email');
+
+      // ── Name: use column value, or generate a fallback for anonymous rows ────
+      // Never skip a non-blank row just because the name field is missing.
+      // Priority: name column → email prefix → resolved phone → row-position label.
+      const nameRaw = getVal('name');
+      const name    = nameRaw
+        || (email ? email.split('@')[0] : '')
+        || phone
+        || `Unknown (Row ${rowIndex})`;
       const company         = getVal('company');
       const city            = getVal('city');
       const state           = getVal('state');
@@ -247,6 +270,12 @@ async function syncTab(accessToken, tenantId, spreadsheetId, tabName) {
         if (!mappedColIndices.has(c) && originalHeaders[c] && row[c]) {
           customFields[String(originalHeaders[c]).trim().toLowerCase()] = String(row[c]).trim();
         }
+      }
+      // phone_number is a mapped column so it is excluded from the loop above.
+      // When the raw value was non-empty but invalid (e.g. 'female', 'male', 'p:'),
+      // preserve it in customFields so operators can see what the original cell contained.
+      if (phoneRaw && !isValidPhone(phoneRaw)) {
+        customFields['phone_number'] = phoneRaw;
       }
 
       const _str = (v) => (v !== undefined && v !== null ? String(v).trim() : null) || null;
@@ -330,13 +359,16 @@ async function syncTab(accessToken, tenantId, spreadsheetId, tabName) {
     }
   }
 
-  return { status: 'ok', created, skipped, deletedSourceSkipped, errors };
+  return { status: 'ok', created, skipped, deletedSourceSkipped, blankRows, errors };
 }
 
-// ─── Core: sync one integration doc (all its configured spreadsheets) ─────────
-async function syncIntegrationDoc(doc) {
+// ─── Core: sync one integration doc (all or one specific spreadsheet) ─────────
+// @param {object} doc                — Integration document (lean or hydrated)
+// @param {string|null} targetSpreadsheetId — When provided, only sync this spreadsheet.
+//                                             When null/undefined, sync all configured sheets.
+async function syncIntegrationDoc(doc, targetSpreadsheetId = null) {
   const tenantId = doc.tenantId;
-  const result   = { tenantId, integrationId: doc._id, spreadsheets: [], totalCreated: 0, totalSkipped: 0, totalDeletedSourceSkipped: 0, errors: [] };
+  const result   = { tenantId, integrationId: doc._id, spreadsheets: [], totalCreated: 0, totalSkipped: 0, totalDeletedSourceSkipped: 0, totalBlankRows: 0, errors: [] };
 
   let accessToken;
   try {
@@ -350,14 +382,19 @@ async function syncIntegrationDoc(doc) {
   }
 
   // Determine which spreadsheets to sync
-  const configSheets = Array.isArray(doc.config?.spreadsheets) && doc.config.spreadsheets.length > 0
+  const allConfigSheets = Array.isArray(doc.config?.spreadsheets) && doc.config.spreadsheets.length > 0
     ? doc.config.spreadsheets
     : doc.config?.spreadsheetId
       ? [{ spreadsheetId: doc.config.spreadsheetId, syncMode: doc.config.syncMode || 'single', sheetName: doc.config.sheetName || '' }]
       : [];
 
+  // Filter to target sheet if specified (Drive Watch notification path)
+  const configSheets = targetSpreadsheetId
+    ? allConfigSheets.filter(s => s.spreadsheetId === targetSpreadsheetId)
+    : allConfigSheets;
+
   if (!configSheets.length) {
-    result.errors.push({ reason: 'No spreadsheets configured' });
+    result.errors.push({ reason: targetSpreadsheetId ? `Spreadsheet ${targetSpreadsheetId} not in config` : 'No spreadsheets configured' });
     return result;
   }
 
@@ -365,7 +402,7 @@ async function syncIntegrationDoc(doc) {
     const { spreadsheetId, syncMode, sheetName } = sheetCfg;
     if (!spreadsheetId) continue;
 
-    const sheetResult = { spreadsheetId, created: 0, skipped: 0, deletedSourceSkipped: 0, errors: [] };
+    const sheetResult = { spreadsheetId, created: 0, skipped: 0, deletedSourceSkipped: 0, blankRows: 0, errors: [] };
 
     // Determine which tabs to process
     let tabsToSync = [];
@@ -407,15 +444,17 @@ async function syncIntegrationDoc(doc) {
         break; // stop tabs for this spreadsheet
       }
 
-      sheetResult.created            += tabResult.created;
-      sheetResult.skipped            += tabResult.skipped;
+      sheetResult.created              += tabResult.created;
+      sheetResult.skipped              += tabResult.skipped;
       sheetResult.deletedSourceSkipped += tabResult.deletedSourceSkipped;
+      sheetResult.blankRows            += (tabResult.blankRows || 0);
       sheetResult.errors.push(...(tabResult.errors || []));
     }
 
-    result.totalCreated            += sheetResult.created;
-    result.totalSkipped            += sheetResult.skipped;
+    result.totalCreated              += sheetResult.created;
+    result.totalSkipped              += sheetResult.skipped;
     result.totalDeletedSourceSkipped += sheetResult.deletedSourceSkipped;
+    result.totalBlankRows            += (sheetResult.blankRows || 0);
     result.errors.push(...sheetResult.errors.map(e => ({ spreadsheetId, ...e })));
     result.spreadsheets.push(sheetResult);
   }
@@ -445,7 +484,7 @@ exports.syncAllGoogleSheets = async (req, res) => {
   }
 
   const startedAt = Date.now();
-  const summary   = { processed: 0, totalCreated: 0, totalSkipped: 0, totalDeletedSourceSkipped: 0, errors: 0, details: [] };
+  const summary   = { processed: 0, totalCreated: 0, totalSkipped: 0, totalDeletedSourceSkipped: 0, totalBlankRows: 0, errors: 0, details: [] };
 
   try {
     // ── 2. Find all connected Google Sheets integrations (all tenants) ──────
@@ -461,12 +500,14 @@ exports.syncAllGoogleSheets = async (req, res) => {
         summary.totalCreated              += result.totalCreated;
         summary.totalSkipped              += result.totalSkipped;
         summary.totalDeletedSourceSkipped += result.totalDeletedSourceSkipped;
+        summary.totalBlankRows            += (result.totalBlankRows || 0);
         if (result.errors.length) summary.errors++;
         summary.details.push({
           tenantId:            String(result.tenantId),
           created:             result.totalCreated,
           skipped:             result.totalSkipped,
           deletedSourceSkipped: result.totalDeletedSourceSkipped,
+          blankRows:           result.totalBlankRows || 0,
           errors:              result.errors.length,
         });
       } catch (docErr) {
@@ -483,5 +524,96 @@ exports.syncAllGoogleSheets = async (req, res) => {
   const durationMs = Date.now() - startedAt;
   console.log(`[AutoSync] Done in ${durationMs}ms — created: ${summary.totalCreated}, skipped: ${summary.totalSkipped}, tombstoneSkipped: ${summary.totalDeletedSourceSkipped}`);
 
+  return res.json({ success: true, durationMs, ...summary });
+};
+
+// ─── Export syncIntegrationDoc for Drive notification handler ─────────────────
+exports.syncIntegrationDoc = syncIntegrationDoc;
+
+// ─── POST /api/internal/google-sheets/renew-watches ──────────────────────────
+// Finds watch channels expiring within the next 24 hours (or already expired),
+// stops the old channel, creates a new one, and persists the updated metadata.
+// Called daily by GitHub Actions (google-sheets-watch-renewal.yml).
+// Auth: same INTERNAL_SYNC_SECRET Bearer token.
+// ─────────────────────────────────────────────────────────────────────────────
+exports.renewWatches = async (req, res) => {
+  // ── Authenticate ──────────────────────────────────────────────────────────
+  const secret  = process.env.INTERNAL_SYNC_SECRET;
+  const authHdr = req.headers.authorization || '';
+  const token   = authHdr.startsWith('Bearer ') ? authHdr.slice(7) : authHdr;
+
+  if (!secret || !token || token !== secret) {
+    return res.status(401).json({ success: false, message: 'Unauthorized' });
+  }
+
+  const startedAt   = Date.now();
+  const renewalHorizon = Date.now() + 24 * 60 * 60 * 1000; // renew if expiring within 24h
+  const summary = { processed: 0, renewed: 0, failed: 0, details: [] };
+
+  try {
+    const docs = await Integration.find({ provider: 'google_sheets', status: 'connected' });
+    console.log(`[WatchRenew] Checking ${docs.length} integration(s) for expiring watches`);
+
+    for (const doc of docs) {
+      const sheets = Array.isArray(doc.config?.spreadsheets) ? doc.config.spreadsheets : [];
+      const toRenew = sheets.filter(s =>
+        s.watch?.channelId && s.watch?.resourceId &&
+        (s.watch.expiry == null || s.watch.expiry <= renewalHorizon)
+      );
+
+      if (!toRenew.length) continue;
+      summary.processed++;
+
+      let accessToken;
+      try {
+        accessToken = await getOrRefreshToken(doc, doc.tenantId);
+      } catch (tokenErr) {
+        console.warn(`[WatchRenew] Token error for tenant ${doc.tenantId}:`, tokenErr.message);
+        await Integration.findByIdAndUpdate(doc._id, {
+          $set: { status: 'expired', 'syncSettings.lastSyncError': tokenErr.message },
+        }).catch(() => {});
+        summary.failed += toRenew.length;
+        summary.details.push({ tenantId: String(doc.tenantId), error: `Token error: ${tokenErr.message}` });
+        continue;
+      }
+
+      for (const sheet of toRenew) {
+        try {
+          // Stop old channel first (best effort)
+          await stopDriveWatch(sheet.watch.channelId, sheet.watch.resourceId, accessToken);
+
+          // Create fresh channel
+          const newWatch = await createDriveWatch(sheet.spreadsheetId, accessToken);
+          if (newWatch) {
+            await Integration.findOneAndUpdate(
+              { _id: doc._id, 'config.spreadsheets.spreadsheetId': sheet.spreadsheetId },
+              { $set: { 'config.spreadsheets.$.watch': newWatch } }
+            );
+            summary.renewed++;
+            summary.details.push({
+              tenantId:      String(doc.tenantId),
+              spreadsheetId: sheet.spreadsheetId,
+              newExpiry:     new Date(newWatch.expiry).toISOString(),
+            });
+            console.log(`[WatchRenew] Renewed channel for ${sheet.spreadsheetId} (tenant ${doc.tenantId})`);
+          }
+        } catch (sheetErr) {
+          summary.failed++;
+          summary.details.push({
+            tenantId:      String(doc.tenantId),
+            spreadsheetId: sheet.spreadsheetId,
+            error:         sheetErr.message,
+          });
+          console.error(`[WatchRenew] Failed to renew ${sheet.spreadsheetId}:`, sheetErr.message);
+        }
+      }
+    }
+  } catch (fatalErr) {
+    console.error('[WatchRenew] Fatal error:', fatalErr.message);
+    return res.status(500).json({ success: false, message: fatalErr.message });
+  }
+
+  const durationMs = Date.now() - startedAt;
+  console.log(`[WatchRenew] Done in ${durationMs}ms — renewed: ${summary.renewed}, failed: ${summary.failed}`);
   return res.json({ success: true, durationMs, ...summary });
 };

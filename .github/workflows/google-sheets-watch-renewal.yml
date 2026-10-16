@@ -1,0 +1,26 @@
+name: Google Sheets Watch Renewal
+
+# Renews Google Drive push-notification watch channels that are expiring soon.
+# Watches have a maximum lifetime of 7 days; this job runs daily and renews
+# any channel expiring within the next 24 hours.
+#
+# Required secret (same as the sync workflow):
+#   INTERNAL_SYNC_SECRET — set in GitHub → Settings → Secrets → Actions
+
+on:
+  schedule:
+    # Run once daily at 03:17 UTC (offset from midnight to avoid busy periods)
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+jobs:
+  renew:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Renew expiring Drive watch channels
+        run: |
+          curl --fail-with-body -X POST \
+            "https://nfinity-crm.onrender.com/api/internal/google-sheets/renew-watches" \
+            -H "Authorization: Bearer ${{ secrets.INTERNAL_SYNC_SECRET }}" \
+            -H "Content-Type: application/json"

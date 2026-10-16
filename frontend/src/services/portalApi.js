@@ -6,7 +6,7 @@
 import axios from 'axios'
 
 const portalApi = axios.create({
-  baseURL: `${import.meta.env.VITE_API_URL || ''}/api/portal`,
+  baseURL: `${(import.meta.env.VITE_API_URL || '/api').replace(/\/api\/?$/, '')}/api/portal`,
   timeout: 15000,
   headers: { 'Content-Type': 'application/json' },
 })

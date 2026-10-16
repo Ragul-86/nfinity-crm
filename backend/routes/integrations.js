@@ -20,24 +20,17 @@ const {
   syncGoogleSheet,
   getGoogleSheetsContexts,
 } = require('../controllers/integrationController');
+const { handleDriveNotification } = require('../controllers/driveWatchController');
 
-// ── OAuth callback is PUBLIC — the OAuth provider redirects here with no cookie ──
-// Must be registered BEFORE protect middleware, and before the /:provider wildcard.
+// ── PUBLIC routes — no JWT required ──────────────────────────────────────────
+// OAuth callback: the OAuth provider redirects here with no cookie.
 router.get('/oauth/:provider/callback', oauthCallback);
 
-// ── TEMPORARY DIAGNOSTIC — remove after confirming route registration ─────────
-// Tests whether this version of integrations.js is actually loaded by Render.
-// Called without auth: GET /api/integrations/google_sheets/debug-routes
-router.get('/google_sheets/debug-routes', (req, res) => {
-  res.json({
-    routeFileLoaded: true,
-    googleSheetsPickerConfig: typeof getGoogleSheetsPickerConfig === 'function',
-    googleSheetsVerify:       typeof verifySheetAccess === 'function',
-    googleSheetsConfig:       typeof saveSheetConfig === 'function',
-    googleSheetsSync:         typeof syncGoogleSheet === 'function',
-    timestamp: new Date().toISOString(),
-  });
-});
+// Drive push notifications: Google Drive calls this when a watched spreadsheet
+// changes.  Must be public — Google has no way to send our JWT.
+// Security is handled internally: channelId + resourceId are validated against
+// stored watch metadata in MongoDB.  tenantId is NEVER taken from this request.
+router.post('/google_sheets/notifications', handleDriveNotification);
 
 // ── All remaining routes require authentication ───────────────────────────────
 router.use(protect);

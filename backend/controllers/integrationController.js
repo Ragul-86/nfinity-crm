@@ -6,6 +6,8 @@ const PipelineMapping = require('../models/PipelineMapping');
 const { logAction }    = require('../utils/auditLogger');
 const { encrypt, decrypt, encryptFields, decryptFields, maskSecret } = require('../utils/encryption');
 const { getTenantFilter, injectTenantId } = require('../middleware/auth');
+const { createDriveWatch, stopDriveWatch } = require('../utils/driveWatch');
+const { isValidPhone, resolvePhone } = require('../utils/phoneUtils');
 
 // ── Inline error helper (no AppError class needed) ───────────────────────────
 const err = (msg, code = 400) => Object.assign(new Error(msg), { statusCode: code });
@@ -547,6 +549,25 @@ exports.disconnectIntegration = async (req, res, next) => {
     const doc = await Integration.findOne({ ...tf, provider });
     if (!doc) return next(err('Integration not found', 404));
 
+    // ── Stop all Drive watch channels before wiping config ────────────────────
+    if (provider === 'google_sheets') {
+      try {
+        const sheets = Array.isArray(doc.config?.spreadsheets) ? doc.config.spreadsheets : [];
+        const withWatches = sheets.filter(s => s.watch?.channelId && s.watch?.resourceId);
+        if (withWatches.length > 0) {
+          const accessToken = await getOrRefreshToken(doc, tf).catch(() => null);
+          if (accessToken) {
+            await Promise.all(
+              withWatches.map(s => stopDriveWatch(s.watch.channelId, s.watch.resourceId, accessToken))
+            );
+          }
+        }
+      } catch (watchErr) {
+        // Non-fatal — log and continue with disconnect
+        console.warn('[DriveWatch] Stop watches on disconnect failed:', watchErr.message);
+      }
+    }
+
     await Integration.findOneAndUpdate(
       { ...tf, provider },
       {
@@ -940,6 +961,30 @@ exports.saveSheetConfig = async (req, res, next) => {
       req,
     });
 
+    // ── Drive Watch: stop old channel (if any) and create new one ─────────────
+    // Non-fatal — errors are logged but do not block the config-save response.
+    try {
+      const freshDoc     = await Integration.findOne({ ...tf, provider: 'google_sheets' });
+      const accessToken  = await getOrRefreshToken(freshDoc, tf);
+
+      // Stop the previous watch for this spreadsheet if one existed
+      const prevEntry = doc.config?.spreadsheets?.find(s => s.spreadsheetId === newEntry.spreadsheetId);
+      if (prevEntry?.watch?.channelId && prevEntry?.watch?.resourceId) {
+        await stopDriveWatch(prevEntry.watch.channelId, prevEntry.watch.resourceId, accessToken);
+      }
+
+      // Create a new watch and persist the metadata
+      const watch = await createDriveWatch(newEntry.spreadsheetId, accessToken);
+      if (watch) {
+        await Integration.findOneAndUpdate(
+          { ...tf, provider: 'google_sheets', 'config.spreadsheets.spreadsheetId': newEntry.spreadsheetId },
+          { $set: { 'config.spreadsheets.$.watch': watch } }
+        );
+      }
+    } catch (watchErr) {
+      console.error('[DriveWatch] Watch setup failed for', newEntry.spreadsheetId, ':', watchErr.message);
+    }
+
     res.json({ success: true, data: toClient(updated), message: 'Sheet configuration saved' });
   } catch (e) { next(e); }
 };
@@ -963,6 +1008,17 @@ exports.removeSheetConfig = async (req, res, next) => {
 
     if (filtered.length === existing.length) {
       return next(err('Spreadsheet not found in configuration', 404));
+    }
+
+    // ── Drive Watch: stop the channel for the sheet being removed ─────────────
+    const removedEntry = existing.find(s => s.spreadsheetId === String(spreadsheetId));
+    if (removedEntry?.watch?.channelId && removedEntry?.watch?.resourceId) {
+      try {
+        const accessToken = await getOrRefreshToken(doc, tf);
+        await stopDriveWatch(removedEntry.watch.channelId, removedEntry.watch.resourceId, accessToken);
+      } catch (watchErr) {
+        console.warn('[DriveWatch] Stop watch on remove failed:', watchErr.message);
+      }
     }
 
     // Promote the first remaining sheet to be the legacy primary (backward compat)
@@ -1088,7 +1144,7 @@ exports.syncGoogleSheet = async (req, res, next) => {
 
     const Lead = require('../models/Lead');
     const DeletedLeadSource = require('../models/DeletedLeadSource');
-    let created = 0, skipped = 0, linked = 0, deletedSourceSkipped = 0;
+    let created = 0, skipped = 0, linked = 0, deletedSourceSkipped = 0, blankRows = 0;
     const errors = [];
 
     // ── Process each tab (one iteration for 'single', all tabs for 'all') ───
@@ -1121,21 +1177,24 @@ exports.syncGoogleSheet = async (req, res, next) => {
       const headers         = rows[0].map(normalizeHeader);
       const fieldMap        = {};
       let idColIndex        = -1;
+      let whatsappColIndex  = -1; // fallback phone source when phone_number column is invalid
 
       for (let c = 0; c < headers.length; c++) {
         const h = headers[c];
         if (GSHEET_ID_HEADERS.has(h)) {
           if (idColIndex === -1) idColIndex = c;
+        } else if (h === 'whatsapp number') {
+          // Track whatsapp_number as a phone fallback but do NOT add it to fieldMap —
+          // that would prevent phone_number (which comes after it) from being mapped.
+          if (whatsappColIndex === -1) whatsappColIndex = c;
         } else if (GSHEET_HEADER_MAP[h] && fieldMap[GSHEET_HEADER_MAP[h]] === undefined) {
           fieldMap[GSHEET_HEADER_MAP[h]] = c;
         }
       }
 
-      if (fieldMap.name === undefined) {
-        // Tab has no Name column — skip with a note
-        errors.push({ tab: tabName, reason: 'No "Name" column found — tab skipped' });
-        continue;
-      }
+      // Track whether the tab has a dedicated Name column so we can generate fallback names.
+      // We no longer skip tabs that lack a Name column — every non-blank row gets imported.
+      const hasNameCol = fieldMap.name !== undefined; // eslint-disable-line no-unused-vars
 
       // ── Row loop ─────────────────────────────────────────────────────────
       for (let i = 1; i < rows.length; i++) {
@@ -1148,11 +1207,27 @@ exports.syncGoogleSheet = async (req, res, next) => {
             return idx !== undefined ? String(row[idx] || '').trim() : '';
           };
 
-          const name = getVal('name');
-          if (!name) continue; // Skip rows without a name
+          // ── Blank row: skip rows where every cell is empty / whitespace ───
+          const isBlankRow = row.every(cell => !String(cell || '').trim());
+          if (isBlankRow) { blankRows++; continue; }
 
-          const phone           = getVal('phone');
+          // ── Resolve phone first so it is available for the name fallback ──
+          // Resolve phone: use phone_number column if it contains ≥7 digits;
+          // fall back to whatsapp_number column if available and valid;
+          // otherwise '' — falsy, so no DB phone-match query runs.
+          const phoneRaw        = getVal('phone');
+          const waRaw           = whatsappColIndex !== -1 ? String(row[whatsappColIndex] || '').trim() : '';
+          const phone           = resolvePhone(phoneRaw, waRaw);
           const email           = getVal('email');
+
+          // ── Name: use column value, or generate a fallback for anonymous rows ──
+          // Never skip a non-blank row just because the name field is missing.
+          // Priority: name column → email prefix → resolved phone → row-position label.
+          const nameRaw = getVal('name');
+          const name    = nameRaw
+            || (email ? email.split('@')[0] : '')
+            || phone
+            || `Unknown (Row ${rowIndex})`;
           const company         = getVal('company');
           const city            = getVal('city');
           const state           = getVal('state');
@@ -1172,6 +1247,12 @@ exports.syncGoogleSheet = async (req, res, next) => {
               const origKey = String(originalHeaders[c]).trim().toLowerCase();
               customFields[origKey] = String(row[c]).trim();
             }
+          }
+          // phone_number is a mapped column so it is excluded from the loop above.
+          // When the raw value was non-empty but invalid (e.g. 'female', 'male', 'p:'),
+          // preserve it in customFields so operators can see what the original cell contained.
+          if (phoneRaw && !isValidPhone(phoneRaw)) {
+            customFields['phone_number'] = phoneRaw;
           }
 
           // ── Attribution: promote Meta Ads columns to top-level fields ────
@@ -1290,15 +1371,16 @@ exports.syncGoogleSheet = async (req, res, next) => {
       tenantId:    tf.tenantId,
       resourceId:  'google_sheets',
       resourceType:'integration',
-      details:     { spreadsheetId, syncMode, tabs: tabsToSync, created, skipped, linked, deletedSourceSkipped, errors: errors.length },
+      details:     { spreadsheetId, syncMode, tabs: tabsToSync, created, skipped, linked, blankRows, deletedSourceSkipped, errors: errors.length },
       req,
     });
 
     const message = `Sync complete — ${created} new, ${skipped} skipped, ${linked} linked` +
+      (blankRows ? `, ${blankRows} blank row(s) ignored` : '') +
       (deletedSourceSkipped ? `, ${deletedSourceSkipped} previously-deleted skipped` : '') +
       (errors.length ? `, ${errors.length} error(s)` : '');
 
-    res.json({ success: true, created, skipped, linked, deletedSourceSkipped, errors, message });
+    res.json({ success: true, created, skipped, linked, blankRows, deletedSourceSkipped, errors, message });
   } catch (e) { next(e); }
 };
 

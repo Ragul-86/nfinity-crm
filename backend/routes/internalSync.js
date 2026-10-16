@@ -13,9 +13,14 @@
 
 const express = require('express');
 const router  = express.Router();
-const { syncAllGoogleSheets } = require('../controllers/internalSyncController');
+const { syncAllGoogleSheets, renewWatches } = require('../controllers/internalSyncController');
 
 // POST /api/internal/google-sheets/sync-all
+// Called by GitHub Actions every 5 minutes to sync all connected Google Sheets.
 router.post('/google-sheets/sync-all', syncAllGoogleSheets);
+
+// POST /api/internal/google-sheets/renew-watches
+// Called by GitHub Actions daily to renew Drive watch channels expiring within 24h.
+router.post('/google-sheets/renew-watches', renewWatches);
 
 module.exports = router;
