@@ -4,8 +4,14 @@
  * Tombstone collection. When a CRM Lead that originated from Google Sheets is deleted,
  * we write a record here so the automatic sync never recreates it.
  *
- * Lookup key for dedup: tenantId + externalSource + externalLeadId
- * (spreadsheetId is stored for diagnostics / future allow-list restore).
+ * Lookup key for dedup: tenantId + externalSource + externalLeadId + spreadsheetId
+ * This allows two tombstones from DIFFERENT spreadsheets that share the same externalLeadId
+ * (e.g. both have a tab "Sheet1" row 2) to coexist independently.
+ *
+ * PRODUCTION MIGRATION REQUIRED (one-time, safe to run on a live cluster):
+ *   db.deletedleadsources.dropIndex({ tenantId: 1, externalSource: 1, externalLeadId: 1 })
+ * Run BEFORE deploying this version. After the app restarts, Mongoose will create the new
+ * four-field unique index automatically. The data itself is not modified.
  */
 
 const mongoose = require('mongoose');
@@ -48,9 +54,10 @@ const DeletedLeadSourceSchema = new mongoose.Schema(
   { timestamps: false, collection: 'deletedleadsources' }
 );
 
-// Primary dedup lookup
+// Primary dedup lookup — scoped to spreadsheetId so tombstones from different
+// spreadsheets with the same externalLeadId can coexist independently.
 DeletedLeadSourceSchema.index(
-  { tenantId: 1, externalSource: 1, externalLeadId: 1 },
+  { tenantId: 1, externalSource: 1, externalLeadId: 1, spreadsheetId: 1 },
   { unique: true }
 );
 

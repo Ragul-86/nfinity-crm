@@ -298,17 +298,31 @@ async function syncTab(accessToken, tenantId, spreadsheetId, tabName) {
 
       const source = normaliseSrc(getVal('source'));
 
-      // Step 1: exact key dedup
-      const byKey = await Lead.findOne({ tenantId, externalLeadId, externalSource });
+      // Step 1: exact key dedup — scoped to this spreadsheet.
+      // Legacy fallback: leads imported before spreadsheetId tracking (spreadsheetId null/'') are
+      // still matched by externalLeadId alone, preventing re-import of pre-existing records.
+      const byKey = await Lead.findOne({
+        tenantId,
+        externalLeadId,
+        externalSource,
+        $or: [{ spreadsheetId }, { spreadsheetId: { $in: [null, ''] } }],
+      });
       if (byKey) { skipped++; continue; }
 
-      // Step 1b: tombstone check
-      const tombstone = await DeletedLeadSource.findOne({ tenantId, externalSource, externalLeadId });
+      // Step 1b: tombstone check — scoped to this spreadsheet.
+      // Legacy fallback: tombstones without spreadsheetId (created before isolation fix) still block re-import.
+      const tombstone = await DeletedLeadSource.findOne({
+        tenantId,
+        externalSource,
+        externalLeadId,
+        $or: [{ spreadsheetId }, { spreadsheetId: { $in: [null, ''] } }],
+      });
       if (tombstone) { deletedSourceSkipped++; continue; }
 
-      // Step 2: phone dedup
+      // Step 2: phone dedup — STRICT: same spreadsheet only.
+      // Two different spreadsheets with the same phone number create two separate leads.
       if (phone) {
-        const byPhone = await Lead.findOne({ tenantId, phone });
+        const byPhone = await Lead.findOne({ tenantId, phone, spreadsheetId });
         if (byPhone) {
           if (!byPhone.externalLeadId) {
             await Lead.updateOne({ _id: byPhone._id }, { $set: { externalLeadId, externalSource } });
@@ -317,9 +331,10 @@ async function syncTab(accessToken, tenantId, spreadsheetId, tabName) {
         }
       }
 
-      // Step 3: email dedup
+      // Step 3: email dedup — STRICT: same spreadsheet only.
+      // Two different spreadsheets with the same email create two separate leads.
       if (email) {
-        const byEmail = await Lead.findOne({ tenantId, email });
+        const byEmail = await Lead.findOne({ tenantId, email, spreadsheetId });
         if (byEmail) {
           if (!byEmail.externalLeadId) {
             await Lead.updateOne({ _id: byEmail._id }, { $set: { externalLeadId, externalSource } });

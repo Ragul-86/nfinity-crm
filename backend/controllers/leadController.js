@@ -155,7 +155,7 @@ exports.deleteLead = async (req, res, next) => {
     if (lead.externalSource === 'google_sheets' && lead.externalLeadId) {
       const DeletedLeadSource = require('../models/DeletedLeadSource');
       await DeletedLeadSource.findOneAndUpdate(
-        { tenantId: lead.tenantId, externalSource: lead.externalSource, externalLeadId: lead.externalLeadId },
+        { tenantId: lead.tenantId, externalSource: lead.externalSource, externalLeadId: lead.externalLeadId, spreadsheetId: lead.spreadsheetId || '' },
         { $setOnInsert: { tenantId: lead.tenantId, externalSource: lead.externalSource, spreadsheetId: lead.spreadsheetId || '', sheetName: lead.sheetName || '', externalLeadId: lead.externalLeadId, deletedBy: req.user.id, deletedAt: new Date() } },
         { upsert: true }
       ).catch(() => {}); // fire-and-forget — never block the delete
@@ -423,7 +423,7 @@ exports.bulkAction = async (req, res, next) => {
           if (gsLeads.length) {
             const tombstones = gsLeads.map(l => ({
               updateOne: {
-                filter: { tenantId: l.tenantId, externalSource: l.externalSource, externalLeadId: l.externalLeadId },
+                filter: { tenantId: l.tenantId, externalSource: l.externalSource, externalLeadId: l.externalLeadId, spreadsheetId: l.spreadsheetId || '' },
                 update: { $setOnInsert: { tenantId: l.tenantId, externalSource: l.externalSource, spreadsheetId: l.spreadsheetId || '', sheetName: l.sheetName || '', externalLeadId: l.externalLeadId, deletedBy: req.user.id, deletedAt: new Date() } },
                 upsert: true,
               },

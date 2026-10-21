@@ -1278,24 +1278,35 @@ exports.syncGoogleSheet = async (req, res, next) => {
           // ── Source: normalise platform column value ───────────────────────
           const source = normaliseSrcGS(getVal('source')); // 'platform' → 'source' via GSHEET_HEADER_MAP
 
-          // Step 1 — Primary: exact external key match → skip (already in CRM)
-          const byKey = await Lead.findOne({ tenantId: tf.tenantId, externalLeadId, externalSource });
+          // Step 1 — Primary: exact external key match → skip (already in CRM).
+          // Scoped to this spreadsheet. Legacy fallback: leads imported before spreadsheetId
+          // tracking (spreadsheetId null/'') are still matched so they are not re-imported.
+          const byKey = await Lead.findOne({
+            tenantId: tf.tenantId,
+            externalLeadId,
+            externalSource,
+            $or: [{ spreadsheetId }, { spreadsheetId: { $in: [null, ''] } }],
+          });
           if (byKey) { skipped++; continue; }
 
-          // Step 1b — Tombstone check: this lead was previously deleted from CRM
-          // Never recreate a lead that the user explicitly deleted
+          // Step 1b — Tombstone check: this lead was previously deleted from CRM.
+          // Scoped to this spreadsheet. Legacy fallback: tombstones without spreadsheetId
+          // (created before isolation fix) still block re-import.
           const tombstone = await DeletedLeadSource.findOne({
             tenantId: tf.tenantId,
             externalSource,
             externalLeadId,
+            $or: [{ spreadsheetId }, { spreadsheetId: { $in: [null, ''] } }],
           });
           if (tombstone) { deletedSourceSkipped++; continue; }
 
-          // Step 2 — Secondary: phone match
+          // Step 2 — Secondary: phone match — STRICT: same spreadsheet only.
+          // Two different spreadsheets with the same phone number create two separate leads.
+          // Never link or merge a lead across spreadsheets via phone.
           if (phone) {
-            const byPhone = await Lead.findOne({ tenantId: tf.tenantId, phone });
+            const byPhone = await Lead.findOne({ tenantId: tf.tenantId, phone, spreadsheetId });
             if (byPhone) {
-              // Only link if no existing external key (preserve Apps Script leads)
+              // Only link if no existing external key (within same spreadsheet)
               if (!byPhone.externalLeadId) {
                 await Lead.updateOne({ _id: byPhone._id }, { $set: { externalLeadId, externalSource } });
               }
@@ -1303,9 +1314,11 @@ exports.syncGoogleSheet = async (req, res, next) => {
             }
           }
 
-          // Step 3 — Tertiary: email match
+          // Step 3 — Tertiary: email match — STRICT: same spreadsheet only.
+          // Two different spreadsheets with the same email create two separate leads.
+          // Never link or merge a lead across spreadsheets via email.
           if (email) {
-            const byEmail = await Lead.findOne({ tenantId: tf.tenantId, email });
+            const byEmail = await Lead.findOne({ tenantId: tf.tenantId, email, spreadsheetId });
             if (byEmail) {
               if (!byEmail.externalLeadId) {
                 await Lead.updateOne({ _id: byEmail._id }, { $set: { externalLeadId, externalSource } });
