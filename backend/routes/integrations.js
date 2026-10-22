@@ -19,6 +19,7 @@ const {
   removeSheetConfig,
   syncGoogleSheet,
   getGoogleSheetsContexts,
+  resetSheetTombstones,
 } = require('../controllers/integrationController');
 const { handleDriveNotification } = require('../controllers/driveWatchController');
 
@@ -49,6 +50,11 @@ router.post('/google_sheets/config/verify',  authorize(...ALLOWED_ROLES), verify
 router.post('/google_sheets/config',         authorize(...ALLOWED_ROLES), saveSheetConfig);
 router.post('/google_sheets/sync',           authorize(...ALLOWED_ROLES), syncGoogleSheet);
 router.delete('/google_sheets/config/:spreadsheetId', authorize(...ALLOWED_ROLES), removeSheetConfig);
+
+// Admin-only: preview or reset tombstones for one spreadsheet.
+// Must come before the generic /:provider wildcards.
+const ADMIN_ROLES = ['super_admin', 'admin'];
+router.post('/google_sheets/tombstones/reset', authorize(...ADMIN_ROLES), resetSheetTombstones);
 
 // ── Integration CRUD ──────────────────────────────────────────────────────────
 // These must come AFTER the /oauth/* routes to avoid /:provider matching "oauth".

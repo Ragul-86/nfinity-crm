@@ -1058,6 +1058,119 @@ exports.removeSheetConfig = async (req, res, next) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// POST /api/integrations/google_sheets/tombstones/reset
+//
+// Admin-only: preview or permanently delete tombstones for ONE specific
+// spreadsheet belonging to the authenticated tenant.
+//
+// Security contract:
+//   • tenantId is ALWAYS taken from the JWT (getTenantFilter) — never from body.
+//   • spreadsheetId must be present in the tenant's own integration config.
+//   • Only roles super_admin / admin are permitted.
+//   • Without { confirm: true } → dry-run: returns the count but deletes nothing.
+//   • With    { confirm: true } → deletes and returns how many were removed.
+//
+// Body: { spreadsheetId: string, confirm?: boolean }
+//
+// Response (dry-run):  { success, dryRun: true,  count,        spreadsheetId, message }
+// Response (confirmed): { success, dryRun: false, deletedCount, spreadsheetId, message }
+// ─────────────────────────────────────────────────────────────────────────────
+exports.resetSheetTombstones = async (req, res, next) => {
+  try {
+    // ── 1. Role check — admin / super_admin only ──────────────────────────────
+    if (!['super_admin', 'admin'].includes(req.user?.role)) {
+      return next(err('Admin access required', 403));
+    }
+
+    // ── 2. tenantId from JWT only — never from body ───────────────────────────
+    const tf = getTenantFilter(req);
+
+    // ── 3. Validate spreadsheetId from body ───────────────────────────────────
+    const { spreadsheetId: rawSheetId, confirm } = req.body || {};
+    if (!rawSheetId || typeof rawSheetId !== 'string' || !rawSheetId.trim()) {
+      return next(err('spreadsheetId is required in the request body', 400));
+    }
+    const sheetId = rawSheetId.trim();
+
+    // ── 4. Verify spreadsheet belongs to this tenant's integration ────────────
+    // This prevents deleting tombstones for an arbitrary spreadsheet ID that
+    // the tenant has never connected.
+    const doc = await Integration.findOne({ ...tf, provider: 'google_sheets' });
+    if (!doc) return next(err('Google Sheets is not connected for this tenant', 404));
+
+    const configSheets = Array.isArray(doc.config?.spreadsheets) ? doc.config.spreadsheets : [];
+    const legacyId     = doc.config?.spreadsheetId ? String(doc.config.spreadsheetId).trim() : null;
+    const ownedIds     = new Set([
+      ...configSheets.map(s => s.spreadsheetId).filter(Boolean),
+      ...(legacyId ? [legacyId] : []),
+    ]);
+
+    if (!ownedIds.has(sheetId)) {
+      return next(err(
+        `Spreadsheet ID "${sheetId}" is not in this tenant's Google Sheets configuration. ` +
+        `Only spreadsheets connected to this account may be affected.`,
+        400
+      ));
+    }
+
+    // ── 5. Count tombstones scoped to this tenant + source + spreadsheet ──────
+    const DeletedLeadSource = require('../models/DeletedLeadSource');
+    const count = await DeletedLeadSource.countDocuments({
+      tenantId:       tf.tenantId,
+      externalSource: 'google_sheets',
+      spreadsheetId:  sheetId,
+    });
+
+    // ── 6. Dry-run (default — confirm must be the boolean true to proceed) ────
+    if (confirm !== true) {
+      return res.json({
+        success:       true,
+        dryRun:        true,
+        count,
+        spreadsheetId: sheetId,
+        message:
+          `Dry run: ${count} tombstone(s) found for spreadsheet "${sheetId}". ` +
+          `No data was changed. To execute, send { spreadsheetId, confirm: true }.`,
+      });
+    }
+
+    // ── 7. Confirmed delete — scoped strictly to this tenant + spreadsheet ────
+    // Tombstones for any other spreadsheet or tenant are completely untouched.
+    const result = await DeletedLeadSource.deleteMany({
+      tenantId:       tf.tenantId,
+      externalSource: 'google_sheets',
+      spreadsheetId:  sheetId,
+    });
+
+    await logAction({
+      action:       'tombstones_reset',
+      module:       'integrations',
+      performedBy:  req.user._id,
+      tenantId:     tf.tenantId,
+      resourceId:   sheetId,
+      resourceType: 'integration',
+      details:      { spreadsheetId: sheetId, deletedCount: result.deletedCount },
+      req,
+    });
+
+    console.log(
+      `[TombstoneReset] tenant=${tf.tenantId} sheet="${sheetId}" ` +
+      `deleted=${result.deletedCount} by=${req.user._id}`
+    );
+
+    return res.json({
+      success:       true,
+      dryRun:        false,
+      deletedCount:  result.deletedCount,
+      spreadsheetId: sheetId,
+      message:
+        `Reset complete: ${result.deletedCount} tombstone(s) deleted for spreadsheet "${sheetId}". ` +
+        `You may now re-import these rows by running a sync.`,
+    });
+  } catch (e) { next(e); }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 // POST /api/integrations/google_sheets/sync
 // Read all rows from the configured sheet and upsert as Leads.
 //
@@ -1153,6 +1266,20 @@ exports.syncGoogleSheet = async (req, res, next) => {
     const DeletedLeadSource = require('../models/DeletedLeadSource');
     let created = 0, skipped = 0, linked = 0, deletedSourceSkipped = 0, blankRows = 0;
     const errors = [];
+
+    // ── Always-on tombstone count diagnostic (no PII — counts only) ────────
+    // Purpose: surface whether tombstones exist for THIS sheet's exact ID vs
+    // legacy tombstones with spreadsheetId:''.  Appears in Render logs without
+    // needing GSHEETS_SYNC_DEBUG=true.  Remove after root cause is confirmed.
+    {
+      const _tsExact  = await DeletedLeadSource.countDocuments({
+        tenantId: tf.tenantId, externalSource: 'google_sheets', spreadsheetId,
+      });
+      const _tsLegacy = await DeletedLeadSource.countDocuments({
+        tenantId: tf.tenantId, externalSource: 'google_sheets', spreadsheetId: '',
+      });
+      console.log(`[SyncInfo][manual] sheet="${spreadsheetId}" tombstones_exact_match=${_tsExact} tombstones_legacy_empty=${_tsLegacy} tabs=${JSON.stringify(tabsToSync)}`);
+    }
 
     // ── Process each tab (one iteration for 'single', all tabs for 'all') ───
     syncDiag(`SYNC START sheet="${spreadsheetId}" tabs=${JSON.stringify(tabsToSync)}`);
