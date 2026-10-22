@@ -309,13 +309,18 @@ async function syncTab(accessToken, tenantId, spreadsheetId, tabName) {
       });
       if (byKey) { skipped++; continue; }
 
-      // Step 1b: tombstone check — scoped to this spreadsheet.
-      // Legacy fallback: tombstones without spreadsheetId (created before isolation fix) still block re-import.
+      // Step 1b: tombstone check — STRICT: only tombstones for this exact spreadsheet.
+      // We intentionally do NOT use a legacy fallback ($in:[null,'']) here.
+      // Tombstones with spreadsheetId:'' were created from leads imported before spreadsheetId
+      // tracking was added; their origin spreadsheet is unknown and they must not block rows
+      // from a new, identified spreadsheet. If the same sheet is reconnected with its real ID,
+      // tombstones created by the current code (which always stores the real spreadsheetId) will
+      // correctly prevent re-import.
       const tombstone = await DeletedLeadSource.findOne({
         tenantId,
         externalSource,
         externalLeadId,
-        $or: [{ spreadsheetId }, { spreadsheetId: { $in: [null, ''] } }],
+        spreadsheetId,
       });
       if (tombstone) { deletedSourceSkipped++; continue; }
 

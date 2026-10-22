@@ -1289,14 +1289,17 @@ exports.syncGoogleSheet = async (req, res, next) => {
           });
           if (byKey) { skipped++; continue; }
 
-          // Step 1b — Tombstone check: this lead was previously deleted from CRM.
-          // Scoped to this spreadsheet. Legacy fallback: tombstones without spreadsheetId
-          // (created before isolation fix) still block re-import.
+          // Step 1b — Tombstone check: STRICT: only tombstones for this exact spreadsheet.
+          // We intentionally do NOT use a legacy fallback ($in:[null,'']) here.
+          // Tombstones with spreadsheetId:'' were created from leads imported before spreadsheetId
+          // tracking was added; their origin spreadsheet is unknown and they must not block rows
+          // from a new, identified spreadsheet. Tombstones created by the current code always
+          // store the real spreadsheetId and will correctly prevent re-import on reconnect.
           const tombstone = await DeletedLeadSource.findOne({
             tenantId: tf.tenantId,
             externalSource,
             externalLeadId,
-            $or: [{ spreadsheetId }, { spreadsheetId: { $in: [null, ''] } }],
+            spreadsheetId,
           });
           if (tombstone) { deletedSourceSkipped++; continue; }
 
@@ -1578,7 +1581,9 @@ exports.oauthInit = async (req, res, next) => {
     const noRedirect = req.query.noRedirect === 'true';
 
     const state       = crypto.randomBytes(16).toString('hex');
-    const callbackBase = process.env.API_BASE_URL || `http://localhost:${process.env.PORT || 5000}`;
+    // Strip any trailing slash(es) so the redirect_uri never gets a double-slash
+    // (e.g. API_BASE_URL="https://host.com/" → "https://host.com").
+    const callbackBase = (process.env.API_BASE_URL || `http://localhost:${process.env.PORT || 5000}`).replace(/\/+$/, '');
 
     // Persist state so the callback can look up the tenant
     await Integration.findOneAndUpdate(
@@ -1679,7 +1684,8 @@ exports.oauthCallback = async (req, res, next) => {
       return res.redirect(closeUrl('error', '&reason=invalid_state'));
     }
 
-    const callbackBase  = process.env.API_BASE_URL || `http://localhost:${process.env.PORT || 5000}`;
+    // Strip any trailing slash(es) so the redirect_uri never gets a double-slash.
+    const callbackBase  = (process.env.API_BASE_URL || `http://localhost:${process.env.PORT || 5000}`).replace(/\/+$/, '');
     let tokens = {};
     let displayConfig  = {};
 

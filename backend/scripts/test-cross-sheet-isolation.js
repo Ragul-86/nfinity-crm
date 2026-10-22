@@ -1,8 +1,12 @@
 /**
  * test-cross-sheet-isolation.js
  *
- * 7 cross-spreadsheet isolation tests for the Google Sheets sync.
+ * 9 cross-spreadsheet isolation tests for the Google Sheets sync.
  * Tests run entirely in-process using a mock Lead/Tombstone store — no MongoDB required.
+ *
+ * Tests 1–7: original cross-sheet isolation suite
+ * Test 8:    legacy tombstone (spreadsheetId:'') must NOT block a new spreadsheet
+ * Test 9:    same-spreadsheet tombstone (spreadsheetId:'SHEET_ID') still blocks re-import
  *
  * Run:  node backend/scripts/test-cross-sheet-isolation.js
  */
@@ -56,12 +60,14 @@ async function processRow({
   );
   if (byKey) return { action: 'skipped', reason: 'byKey' };
 
-  // Step 1b: tombstone — scoped + legacy fallback
+  // Step 1b: tombstone — STRICT: exact spreadsheetId only (no legacy fallback).
+  // Tombstones with spreadsheetId:'' (pre-tracking era) must NOT block rows from a
+  // new, identified spreadsheet. Only tombstones scoped to THIS spreadsheet apply.
   const tombstone = tombstones.find(t =>
     t.tenantId === tenantId &&
     t.externalSource === externalSource &&
     t.externalLeadId === externalLeadId &&
-    (t.spreadsheetId === spreadsheetId || !t.spreadsheetId)
+    t.spreadsheetId  === spreadsheetId
   );
   if (tombstone) return { action: 'skipped', reason: 'tombstone' };
 
@@ -281,6 +287,81 @@ await runTest('7 · Missing / invalid contact fields do not cause cross-lead mer
 
   assert(r1b.action === 'skipped' && r1b.reason === 'tombstone', 'Deleted Lead-A row is blocked by tombstone');
   assert(r2b.action === 'skipped' && r2b.reason === 'byKey',     'Lead-B row skipped because lead still exists (tombstone does not bleed across rows)');
+});
+
+// Test 8: Legacy tombstone (spreadsheetId:'') must NOT block a new spreadsheet.
+// Reproduces the production bug: 62 tombstones with spreadsheetId:'' from an old
+// spreadsheet incorrectly blocked 62 rows from a newly connected spreadsheet.
+await runTest('8 · Legacy tombstones (spreadsheetId:"") do not block a new spreadsheet', async () => {
+  const T      = 'tenant1';
+  const OLD_ID = '';           // legacy — pre-tracking era, spreadsheetId was not stored
+  const NEW_ID = 'NEW_SHEET_ABC123';
+  const TAB    = 'PM Leads';
+
+  // Simulate 62 legacy tombstones (old sheet, unknown origin).
+  for (let i = 2; i <= 63; i++) {
+    tombstones.push({
+      tenantId:       T,
+      externalSource: 'google_sheets',
+      externalLeadId: `gsheets:${TAB}:R${i}`,
+      spreadsheetId:  OLD_ID,   // '' — same as the production bug
+    });
+  }
+  assert(tombstones.length === 62, 'Pre-condition: 62 legacy tombstones exist with spreadsheetId:""');
+
+  // Sync new spreadsheet — same tab name, same row range as the old one.
+  let created = 0;
+  let tombstoneBlocked = 0;
+  for (let i = 2; i <= 65; i++) {  // 64 data rows (indices 2–65)
+    const r = await processRow({
+      tenantId: T, spreadsheetId: NEW_ID, tabName: TAB, rowIndex: i,
+      name: `Lead ${i}`, phone: `+9190${String(i).padStart(8, '0')}`,
+    });
+    if (r.action === 'created')  created++;
+    if (r.reason  === 'tombstone') tombstoneBlocked++;
+  }
+
+  assert(tombstoneBlocked === 0,  'Legacy tombstones (spreadsheetId:"") do NOT block new spreadsheet rows');
+  assert(created === 64,          'All 64 rows from new spreadsheet are imported');
+  assert(leads.length === 64,     'Total lead count is 64');
+});
+
+// Test 9: Same-spreadsheet tombstone (real spreadsheetId) still prevents re-import.
+// Ensures the strict fix does not accidentally allow re-importing deleted rows from
+// the same spreadsheet when a proper tombstone exists.
+await runTest('9 · Same-spreadsheet tombstone (real spreadsheetId) still blocks re-import', async () => {
+  const T      = 'tenant1';
+  const SHEET  = 'SHEET_DEF456';
+  const TAB    = 'Leads';
+
+  // First import: create 3 leads from sheet SHEET.
+  const r1 = await processRow({ tenantId: T, spreadsheetId: SHEET, tabName: TAB, rowIndex: 2, name: 'Alpha', phone: '+919001000001' });
+  const r2 = await processRow({ tenantId: T, spreadsheetId: SHEET, tabName: TAB, rowIndex: 3, name: 'Beta',  phone: '+919001000002' });
+  const r3 = await processRow({ tenantId: T, spreadsheetId: SHEET, tabName: TAB, rowIndex: 4, name: 'Gamma', phone: '+919001000003' });
+  assert(r1.action === 'created' && r2.action === 'created' && r3.action === 'created', '3 leads created initially');
+
+  // User deletes 2 of them → tombstones with the real spreadsheetId.
+  deleteLead(leads.find(l => l.name === 'Alpha')._id);
+  deleteLead(leads.find(l => l.name === 'Beta')._id);
+  assert(tombstones.length === 2, 'Two tombstones exist with spreadsheetId:SHEET_DEF456');
+  assert(tombstones.every(t => t.spreadsheetId === SHEET), 'All tombstones carry the real spreadsheetId');
+
+  // Re-sync same sheet — deleted rows must be blocked; surviving row must be deduped by byKey.
+  const rAlphaRetry = await processRow({ tenantId: T, spreadsheetId: SHEET, tabName: TAB, rowIndex: 2, name: 'Alpha-Retry', phone: '+919001000001' });
+  const rBetaRetry  = await processRow({ tenantId: T, spreadsheetId: SHEET, tabName: TAB, rowIndex: 3, name: 'Beta-Retry',  phone: '+919001000002' });
+  const rGammaRetry = await processRow({ tenantId: T, spreadsheetId: SHEET, tabName: TAB, rowIndex: 4, name: 'Gamma-Retry', phone: '+919001000003' });
+
+  assert(rAlphaRetry.action === 'skipped' && rAlphaRetry.reason === 'tombstone', 'Alpha re-import blocked by same-sheet tombstone');
+  assert(rBetaRetry.action  === 'skipped' && rBetaRetry.reason  === 'tombstone', 'Beta re-import blocked by same-sheet tombstone');
+  assert(rGammaRetry.action === 'skipped' && rGammaRetry.reason === 'byKey',     'Gamma skipped by byKey (still exists, not deleted)');
+  assert(leads.filter(l => l.spreadsheetId === SHEET).length === 1,              'Only 1 lead survives (Gamma)');
+
+  // Crucially: a DIFFERENT spreadsheet with the same tab/row is NOT blocked.
+  const OTHER = 'SHEET_OTHER_XYZ';
+  const rOther2 = await processRow({ tenantId: T, spreadsheetId: OTHER, tabName: TAB, rowIndex: 2, name: 'Other-Alpha', phone: '+919002000001' });
+  const rOther3 = await processRow({ tenantId: T, spreadsheetId: OTHER, tabName: TAB, rowIndex: 3, name: 'Other-Beta',  phone: '+919002000002' });
+  assert(rOther2.action === 'created', 'Different sheet row 2 not blocked by Sheet DEF tombstone');
+  assert(rOther3.action === 'created', 'Different sheet row 3 not blocked by Sheet DEF tombstone');
 });
 
 // ─── Results ──────────────────────────────────────────────────────────────────
