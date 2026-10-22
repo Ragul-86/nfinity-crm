@@ -12,6 +12,13 @@ const { isValidPhone, resolvePhone } = require('../utils/phoneUtils');
 // ── Inline error helper (no AppError class needed) ───────────────────────────
 const err = (msg, code = 400) => Object.assign(new Error(msg), { statusCode: code });
 
+// ── Diagnostic logging (gated by GSHEETS_SYNC_DEBUG=true) ────────────────────
+// Does NOT log tokens, secrets, names, phones, or emails.
+const DEBUG_SYNC = process.env.GSHEETS_SYNC_DEBUG === 'true';
+function syncDiag(...args) {
+  if (DEBUG_SYNC) console.log('[SyncDiag][manual]', ...args);
+}
+
 // ── Sensitive credential keys per provider (always encrypted at rest) ────────
 const SENSITIVE_FIELDS = {
   meta_ads:    ['accessToken', 'refreshToken', 'appSecret'],
@@ -1148,6 +1155,7 @@ exports.syncGoogleSheet = async (req, res, next) => {
     const errors = [];
 
     // ── Process each tab (one iteration for 'single', all tabs for 'all') ───
+    syncDiag(`SYNC START sheet="${spreadsheetId}" tabs=${JSON.stringify(tabsToSync)}`);
     for (const tabName of tabsToSync) {
       // Fetch ALL rows for this tab — passing only the sheet name as the range
       // returns every row that contains data (Google Sheets API handles up to 10M cells).
@@ -1301,7 +1309,10 @@ exports.syncGoogleSheet = async (req, res, next) => {
             externalLeadId,
             spreadsheetId,
           });
-          if (tombstone) { deletedSourceSkipped++; continue; }
+          if (tombstone) {
+            syncDiag(`TOMBSTONE BLOCKED tab="${tabName}" sheet="${spreadsheetId}" R=${rowIndex} key="${externalLeadId}" tombstoneSheet="${tombstone.spreadsheetId}"`);
+            deletedSourceSkipped++; continue;
+          }
 
           // Step 2 — Secondary: phone match — STRICT: same spreadsheet only.
           // Two different spreadsheets with the same phone number create two separate leads.
@@ -1362,6 +1373,7 @@ exports.syncGoogleSheet = async (req, res, next) => {
         }
       }
       // ── end row loop for tabName ──────────────────────────────────────────
+      syncDiag(`DONE tab="${tabName}" sheet="${spreadsheetId}" created=${created} skipped=${skipped} linked=${linked} tombstoneBlocked=${deletedSourceSkipped}`);
     }
     // ── end tab loop ─────────────────────────────────────────────────────────
 

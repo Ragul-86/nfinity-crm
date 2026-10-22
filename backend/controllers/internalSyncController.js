@@ -25,6 +25,15 @@ const { isValidPhone, resolvePhone } = require('../utils/phoneUtils');
 // ─── Sensitive fields for google_sheets provider ──────────────────────────────
 const GS_SENSITIVE = ['accessToken', 'refreshToken'];
 
+// ─── Diagnostic logging ───────────────────────────────────────────────────────
+// Set GSHEETS_SYNC_DEBUG=true in the environment to enable per-row tombstone
+// and dedup tracing. Safe: does NOT log tokens, secrets, names, phones, or emails.
+// Disable (default) in production unless actively debugging the sync.
+const DEBUG_SYNC = process.env.GSHEETS_SYNC_DEBUG === 'true';
+function syncDiag(...args) {
+  if (DEBUG_SYNC) console.log('[SyncDiag][auto]', ...args);
+}
+
 function decryptCreds(stored) {
   if (!stored || !Object.keys(stored).length) return {};
   return decryptFields(stored, GS_SENSITIVE);
@@ -221,6 +230,8 @@ async function syncTab(accessToken, tenantId, spreadsheetId, tabName) {
   let created = 0, skipped = 0, deletedSourceSkipped = 0, blankRows = 0;
   const errors = [];
 
+  syncDiag(`START tab="${tabName}" sheet="${spreadsheetId}" dataRows=${rows.length - 1}`);
+
   for (let i = 1; i < rows.length; i++) {
     const row      = rows[i];
     const rowIndex = i + 1;
@@ -322,7 +333,10 @@ async function syncTab(accessToken, tenantId, spreadsheetId, tabName) {
         externalLeadId,
         spreadsheetId,
       });
-      if (tombstone) { deletedSourceSkipped++; continue; }
+      if (tombstone) {
+        syncDiag(`TOMBSTONE BLOCKED tab="${tabName}" sheet="${spreadsheetId}" R=${rowIndex} key="${externalLeadId}" tombstoneSheet="${tombstone.spreadsheetId}"`);
+        deletedSourceSkipped++; continue;
+      }
 
       // Step 2: phone dedup — STRICT: same spreadsheet only.
       // Two different spreadsheets with the same phone number create two separate leads.
@@ -379,6 +393,7 @@ async function syncTab(accessToken, tenantId, spreadsheetId, tabName) {
     }
   }
 
+  syncDiag(`DONE  tab="${tabName}" sheet="${spreadsheetId}" created=${created} skipped=${skipped} tombstoneBlocked=${deletedSourceSkipped} blank=${blankRows}`);
   return { status: 'ok', created, skipped, deletedSourceSkipped, blankRows, errors };
 }
 

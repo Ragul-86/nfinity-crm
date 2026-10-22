@@ -1,12 +1,15 @@
 /**
  * test-cross-sheet-isolation.js
  *
- * 9 cross-spreadsheet isolation tests for the Google Sheets sync.
+ * 10 cross-spreadsheet isolation tests for the Google Sheets sync.
  * Tests run entirely in-process using a mock Lead/Tombstone store — no MongoDB required.
  *
  * Tests 1–7: original cross-sheet isolation suite
  * Test 8:    legacy tombstone (spreadsheetId:'') must NOT block a new spreadsheet
  * Test 9:    same-spreadsheet tombstone (spreadsheetId:'SHEET_ID') still blocks re-import
+ * Test 10:   two spreadsheets with IDENTICAL tab names and row numbers — tombstones from
+ *            one sheet do not bleed into the other (the root-cause regression test for the
+ *            production bug: "64 previously-deleted skipped" for a newly-connected sheet)
  *
  * Run:  node backend/scripts/test-cross-sheet-isolation.js
  */
@@ -362,6 +365,94 @@ await runTest('9 · Same-spreadsheet tombstone (real spreadsheetId) still blocks
   const rOther3 = await processRow({ tenantId: T, spreadsheetId: OTHER, tabName: TAB, rowIndex: 3, name: 'Other-Beta',  phone: '+919002000002' });
   assert(rOther2.action === 'created', 'Different sheet row 2 not blocked by Sheet DEF tombstone');
   assert(rOther3.action === 'created', 'Different sheet row 3 not blocked by Sheet DEF tombstone');
+});
+
+// Test 10: The exact production bug regression test.
+//
+// Scenario (mirrors what happened in production):
+//   • Old spreadsheet (SHEET_OLD) was synced; 64 leads imported with tab "PM Leads".
+//   • User deleted all 64 leads → 64 tombstones with spreadsheetId: SHEET_OLD.
+//   • New demo spreadsheet (SHEET_NEW) is connected; has the same tab "PM Leads"
+//     with the same 64 row positions (R2–R65).
+//   • Manual sync runs for SHEET_NEW → should import all 64 rows (0 tombstone-blocked).
+//
+// This test verifies that tombstones scoped to SHEET_OLD do not block SHEET_NEW,
+// AND that tombstones scoped to SHEET_NEW correctly prevent re-import from SHEET_NEW.
+await runTest('10 · Production-bug regression: SHEET_OLD tombstones do not block SHEET_NEW (identical tab+rows)', async () => {
+  const T        = 'tenant1';
+  const SHEET_OLD = 'OLD_SPREADSHEET_1ABC';
+  const SHEET_NEW = 'NEW_DEMO_SPREADSHEET_2XYZ';
+  const TAB       = 'PM Leads';
+  const ROW_COUNT = 64; // rows R2–R65
+
+  // ── Phase 1: Import 64 rows from SHEET_OLD ──────────────────────────────
+  for (let i = 2; i <= ROW_COUNT + 1; i++) {
+    const r = await processRow({
+      tenantId: T, spreadsheetId: SHEET_OLD, tabName: TAB, rowIndex: i,
+      name: `OldLead-${i}`, phone: `+9191${String(i).padStart(8, '0')}`,
+    });
+    assert(r.action === 'created', `SHEET_OLD R${i}: created`);
+  }
+  assert(leads.filter(l => l.spreadsheetId === SHEET_OLD).length === ROW_COUNT, `All ${ROW_COUNT} SHEET_OLD leads in store`);
+
+  // ── Phase 2: User deletes all 64 SHEET_OLD leads → tombstones with SHEET_OLD ──
+  const oldLeadIds = leads.filter(l => l.spreadsheetId === SHEET_OLD).map(l => l._id);
+  for (const id of oldLeadIds) deleteLead(id);
+  assert(tombstones.length === ROW_COUNT, `${ROW_COUNT} tombstones created with spreadsheetId=SHEET_OLD`);
+  assert(tombstones.every(t => t.spreadsheetId === SHEET_OLD), 'All tombstones carry SHEET_OLD spreadsheetId');
+
+  // ── Phase 3: Sync SHEET_NEW — same tab name and row positions ───────────
+  let newCreated = 0, newTombstoneBlocked = 0;
+  for (let i = 2; i <= ROW_COUNT + 1; i++) {
+    const r = await processRow({
+      tenantId: T, spreadsheetId: SHEET_NEW, tabName: TAB, rowIndex: i,
+      name: `NewLead-${i}`, phone: `+9192${String(i).padStart(8, '0')}`,
+    });
+    if (r.action === 'created')    newCreated++;
+    if (r.reason === 'tombstone')  newTombstoneBlocked++;
+  }
+  assert(newTombstoneBlocked === 0,   `SHEET_OLD tombstones do NOT block SHEET_NEW rows (0 tombstone-blocked)`);
+  assert(newCreated === ROW_COUNT,    `All ${ROW_COUNT} SHEET_NEW rows imported`);
+  assert(leads.filter(l => l.spreadsheetId === SHEET_NEW).length === ROW_COUNT, `${ROW_COUNT} SHEET_NEW leads exist`);
+
+  // ── Phase 4: Re-sync SHEET_NEW — rows skipped by byKey (leads exist) ─────
+  let resynced = 0, rekeyBlocked = 0;
+  for (let i = 2; i <= ROW_COUNT + 1; i++) {
+    const r = await processRow({
+      tenantId: T, spreadsheetId: SHEET_NEW, tabName: TAB, rowIndex: i,
+      name: `NewLead-${i}-retry`, phone: `+9192${String(i).padStart(8, '0')}`,
+    });
+    if (r.action === 'skipped' && r.reason === 'byKey') rekeyBlocked++;
+    if (r.action === 'created') resynced++;
+  }
+  assert(resynced === 0,         're-sync SHEET_NEW creates 0 duplicates');
+  assert(rekeyBlocked === ROW_COUNT, `All ${ROW_COUNT} SHEET_NEW rows skipped by byKey on re-sync`);
+
+  // ── Phase 5: Delete 3 SHEET_NEW leads → tombstones for SHEET_NEW only ───
+  const newLeadIds = leads.filter(l => l.spreadsheetId === SHEET_NEW).slice(0, 3).map(l => l._id);
+  for (const id of newLeadIds) deleteLead(id);
+  const newTombstones = tombstones.filter(t => t.spreadsheetId === SHEET_NEW);
+  assert(newTombstones.length === 3, '3 tombstones now exist for SHEET_NEW');
+
+  // ── Phase 6: Re-sync SHEET_NEW — the 3 deleted rows are now tombstone-blocked ─
+  let blocked3 = 0, imported0 = 0;
+  for (let i = 2; i <= 4; i++) { // rows R2, R3, R4 — the 3 we deleted
+    const r = await processRow({
+      tenantId: T, spreadsheetId: SHEET_NEW, tabName: TAB, rowIndex: i,
+      name: `NewLead-${i}-retry2`, phone: `+9192${String(i).padStart(8, '0')}`,
+    });
+    if (r.reason === 'tombstone') blocked3++;
+    if (r.action === 'created')   imported0++;
+  }
+  assert(blocked3 === 3,   '3 SHEET_NEW tombstones correctly block re-import of their own rows');
+  assert(imported0 === 0,  'No new leads created for tombstoned SHEET_NEW rows');
+
+  // ── Phase 7: SHEET_OLD tombstones still don't block SHEET_NEW row 50 ────
+  const r50 = await processRow({
+    tenantId: T, spreadsheetId: SHEET_NEW, tabName: TAB, rowIndex: 50,
+    name: 'NewLead-50-extra', phone: '+919200000050',
+  });
+  assert(r50.action === 'skipped' && r50.reason === 'byKey', 'SHEET_NEW R50 (existing lead) still deduped by byKey');
 });
 
 // ─── Results ──────────────────────────────────────────────────────────────────
