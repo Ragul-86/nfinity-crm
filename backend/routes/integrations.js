@@ -20,6 +20,7 @@ const {
   syncGoogleSheet,
   getGoogleSheetsContexts,
   resetSheetTombstones,
+  diagLinkedRows,
 } = require('../controllers/integrationController');
 const { handleDriveNotification } = require('../controllers/driveWatchController');
 
@@ -54,7 +55,12 @@ router.delete('/google_sheets/config/:spreadsheetId', authorize(...ALLOWED_ROLES
 // Admin-only: preview or reset tombstones for one spreadsheet.
 // Must come before the generic /:provider wildcards.
 const ADMIN_ROLES = ['super_admin', 'admin'];
-router.post('/google_sheets/tombstones/reset', authorize(...ADMIN_ROLES), resetSheetTombstones);
+router.post('/google_sheets/tombstones/reset',         authorize(...ADMIN_ROLES), resetSheetTombstones);
+
+// Admin-only: read-only diagnostic — maps every sheet row to its sync disposition
+// (skipped/tombstoneBlocked/linkedPhone/linkedEmail/wouldCreate/blank) without exposing PII.
+// Query: ?spreadsheetId=<id>
+router.get('/google_sheets/diagnostics/linked-rows',   authorize(...ADMIN_ROLES), diagLinkedRows);
 
 // ── Integration CRUD ──────────────────────────────────────────────────────────
 // These must come AFTER the /oauth/* routes to avoid /:provider matching "oauth".

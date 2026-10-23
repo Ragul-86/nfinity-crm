@@ -1171,6 +1171,220 @@ exports.resetSheetTombstones = async (req, res, next) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// GET /api/integrations/google_sheets/diagnostics/linked-rows
+//
+// Read-only diagnostic: for the specified spreadsheet, fetch every sheet row,
+// run the same byKey / tombstone / phone / email checks as the real sync, and
+// return a per-row disposition summary.
+//
+// Security contract:
+//   • tenantId ALWAYS from JWT (getTenantFilter) — never from query/body.
+//   • spreadsheetId must belong to this tenant's integration config.
+//   • Roles: super_admin / admin only.
+//   • Response NEVER contains names, phone numbers, email addresses, or tokens.
+//     Only: tab, rowNumber, rowKey (gsheets:… internal ID), disposition, and
+//     the MongoDB _id of the matched/blocking lead or tombstone document.
+//   • This endpoint performs ZERO writes to any collection.
+//   • Rate-limited by the same Google Sheets API quota as a real sync.
+//
+// Query params: ?spreadsheetId=<id>
+//
+// Response:
+// {
+//   success: true,
+//   spreadsheetId,
+//   tabs: ["PM Leads"],
+//   rows: [
+//     { tab, rowNumber, rowKey, disposition, matchedLeadId, matchedLeadKey,
+//       matchedLeadSource, tombstoneId, tombstoneKey }
+//   ],
+//   summary: { skipped, tombstoneBlocked, linkedPhone, linkedEmail, wouldCreate, blank, error }
+// }
+// ─────────────────────────────────────────────────────────────────────────────
+exports.diagLinkedRows = async (req, res, next) => {
+  try {
+    // ── 1. Admin-only ────────────────────────────────────────────────────────
+    if (!['super_admin', 'admin'].includes(req.user?.role)) {
+      return next(err('Admin access required', 403));
+    }
+
+    const tf = getTenantFilter(req);
+
+    // ── 2. Validate spreadsheetId from query ─────────────────────────────────
+    const rawSheetId = (req.query.spreadsheetId || '').trim();
+    if (!rawSheetId) return next(err('spreadsheetId query param is required', 400));
+
+    // ── 3. Verify spreadsheet belongs to this tenant ──────────────────────────
+    const doc = await Integration.findOne({ ...tf, provider: 'google_sheets' });
+    if (!doc) return next(err('Google Sheets is not connected for this tenant', 404));
+
+    const configSheets   = Array.isArray(doc.config?.spreadsheets) ? doc.config.spreadsheets : [];
+    const legacyId       = doc.config?.spreadsheetId ? String(doc.config.spreadsheetId).trim() : null;
+    const ownedIds       = new Set([
+      ...configSheets.map(s => s.spreadsheetId).filter(Boolean),
+      ...(legacyId ? [legacyId] : []),
+    ]);
+    if (!ownedIds.has(rawSheetId)) {
+      return next(err(`Spreadsheet "${rawSheetId}" is not in this tenant's config`, 400));
+    }
+    const spreadsheetId = rawSheetId;
+
+    // ── 4. Get a valid access token ───────────────────────────────────────────
+    let accessToken;
+    try { accessToken = await getOrRefreshToken(doc, tf); }
+    catch (tokenErr) { return next(Object.assign(new Error(tokenErr.message), { statusCode: 401 })); }
+
+    // ── 5. Determine tabs (same logic as syncGoogleSheet) ─────────────────────
+    const sheetEntry = configSheets.find(s => s.spreadsheetId === spreadsheetId)
+      || (legacyId === spreadsheetId ? { syncMode: doc.config?.syncMode, sheetName: doc.config?.sheetName } : null);
+    const syncMode = sheetEntry?.syncMode === 'all' ? 'all' : 'single';
+
+    let tabsToScan = [];
+    if (syncMode === 'all') {
+      const metaRes = await callSheetsApi(accessToken, `/spreadsheets/${spreadsheetId}?fields=sheets.properties.title`);
+      if (metaRes.status !== 200) return next(err(`Sheets API error (HTTP ${metaRes.status})`, 502));
+      tabsToScan = (metaRes.body.sheets || []).map(s => s.properties?.title).filter(Boolean);
+    } else {
+      const sheetName = sheetEntry?.sheetName;
+      if (!sheetName) return next(err('No sheet tab configured', 400));
+      tabsToScan = [sheetName];
+    }
+
+    const Lead              = require('../models/Lead');
+    const DeletedLeadSource = require('../models/DeletedLeadSource');
+    const rows   = [];
+    const summary = { skipped: 0, tombstoneBlocked: 0, linkedPhone: 0, linkedEmail: 0, wouldCreate: 0, blank: 0, error: 0 };
+
+    for (const tabName of tabsToScan) {
+      const range     = encodeURIComponent(tabName);
+      const sheetsRes = await callSheetsApi(accessToken, `/spreadsheets/${spreadsheetId}/values/${range}`);
+      if (sheetsRes.status !== 200) {
+        rows.push({ tab: tabName, error: `Sheets API HTTP ${sheetsRes.status}` });
+        continue;
+      }
+      const sheetRows = sheetsRes.body.values || [];
+      if (sheetRows.length < 2) continue;
+
+      const headers    = sheetRows[0].map(normalizeHeader);
+      let idColIndex   = -1;
+      let whatsappColIndex = -1;
+      const fieldMap   = {};
+      for (let c = 0; c < headers.length; c++) {
+        const h = headers[c];
+        if (GSHEET_ID_HEADERS.has(h) && idColIndex === -1)               idColIndex = c;
+        else if (h === 'whatsapp number' && whatsappColIndex === -1)      whatsappColIndex = c;
+        else if (GSHEET_HEADER_MAP[h] && fieldMap[GSHEET_HEADER_MAP[h]] === undefined) fieldMap[GSHEET_HEADER_MAP[h]] = c;
+      }
+
+      for (let i = 1; i < sheetRows.length; i++) {
+        const row      = sheetRows[i];
+        const rowIndex = i + 1;
+        const entry    = { tab: tabName, rowNumber: rowIndex };
+
+        try {
+          // Blank row
+          const isBlankRow = row.every(cell => !String(cell || '').trim());
+          if (isBlankRow) { entry.disposition = 'blank'; summary.blank++; rows.push(entry); continue; }
+
+          // Helpers (identical to sync — NO PII stored in response)
+          const getVal = (field) => {
+            const idx = fieldMap[field];
+            return idx !== undefined ? String(row[idx] || '').trim() : '';
+          };
+          const phoneRaw = getVal('phone');
+          const waRaw    = whatsappColIndex !== -1 ? String(row[whatsappColIndex] || '').trim() : '';
+          const phone    = resolvePhone(phoneRaw, waRaw);
+          const email    = getVal('email');
+          const idColVal = idColIndex !== -1 ? String(row[idColIndex] || '').trim() : '';
+          const externalLeadId = idColVal || `gsheets:${tabName}:R${rowIndex}`;
+          const externalSource = 'google_sheets';
+          entry.rowKey = externalLeadId;
+
+          // Step 1: byKey
+          const byKey = await Lead.findOne(
+            { tenantId: tf.tenantId, externalLeadId, externalSource,
+              $or: [{ spreadsheetId }, { spreadsheetId: { $in: [null, ''] } }] },
+            { _id: 1, externalLeadId: 1, externalSource: 1 }
+          ).lean();
+          if (byKey) {
+            entry.disposition    = 'skipped';
+            entry.matchedLeadId  = byKey._id;
+            entry.matchedLeadKey = byKey.externalLeadId;
+            entry.matchedLeadSource = byKey.externalSource;
+            summary.skipped++;
+            rows.push(entry); continue;
+          }
+
+          // Step 1b: tombstone
+          const tombstone = await DeletedLeadSource.findOne(
+            { tenantId: tf.tenantId, externalSource, externalLeadId, spreadsheetId },
+            { _id: 1, externalLeadId: 1 }
+          ).lean();
+          if (tombstone) {
+            entry.disposition  = 'tombstoneBlocked';
+            entry.tombstoneId  = tombstone._id;
+            entry.tombstoneKey = tombstone.externalLeadId;
+            summary.tombstoneBlocked++;
+            rows.push(entry); continue;
+          }
+
+          // Step 2: phone
+          if (phone) {
+            const byPhone = await Lead.findOne(
+              { tenantId: tf.tenantId, phone, spreadsheetId },
+              { _id: 1, externalLeadId: 1, externalSource: 1 }
+            ).lean();
+            if (byPhone) {
+              entry.disposition       = 'linkedPhone';
+              entry.matchedLeadId     = byPhone._id;
+              entry.matchedLeadKey    = byPhone.externalLeadId || 'none';
+              entry.matchedLeadSource = byPhone.externalSource || 'none';
+              summary.linkedPhone++;
+              rows.push(entry); continue;
+            }
+          }
+
+          // Step 3: email
+          if (email) {
+            const byEmail = await Lead.findOne(
+              { tenantId: tf.tenantId, email, spreadsheetId },
+              { _id: 1, externalLeadId: 1, externalSource: 1 }
+            ).lean();
+            if (byEmail) {
+              entry.disposition       = 'linkedEmail';
+              entry.matchedLeadId     = byEmail._id;
+              entry.matchedLeadKey    = byEmail.externalLeadId || 'none';
+              entry.matchedLeadSource = byEmail.externalSource || 'none';
+              summary.linkedEmail++;
+              rows.push(entry); continue;
+            }
+          }
+
+          // Would create
+          entry.disposition = 'wouldCreate';
+          summary.wouldCreate++;
+          rows.push(entry);
+
+        } catch (rowErr) {
+          entry.disposition = 'error';
+          entry.errorReason = rowErr.message;
+          summary.error++;
+          rows.push(entry);
+        }
+      }
+    }
+
+    return res.json({
+      success: true,
+      spreadsheetId,
+      tabs: tabsToScan,
+      rows,
+      summary,
+    });
+  } catch (e) { next(e); }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 // POST /api/integrations/google_sheets/sync
 // Read all rows from the configured sheet and upsert as Leads.
 //
@@ -1457,6 +1671,8 @@ exports.syncGoogleSheet = async (req, res, next) => {
               if (!byPhone.externalLeadId) {
                 await Lead.updateOne({ _id: byPhone._id }, { $set: { externalLeadId, externalSource } });
               }
+              // Always-on: no PII — tab, row, row-key, and existing lead _id only.
+              console.log(`[SyncInfo][linked] reason=phone tab="${tabName}" R=${rowIndex} rowKey="${externalLeadId}" matchedLead=${byPhone._id} matchedLeadKey="${byPhone.externalLeadId || 'none'}" matchedLeadSource="${byPhone.externalSource || 'none'}"`);
               syncDiag(`LINKED_PHONE tab="${tabName}" R=${rowIndex} key="${externalLeadId}" existingLead=${byPhone._id}`);
               linked++; continue;
             }
@@ -1471,6 +1687,8 @@ exports.syncGoogleSheet = async (req, res, next) => {
               if (!byEmail.externalLeadId) {
                 await Lead.updateOne({ _id: byEmail._id }, { $set: { externalLeadId, externalSource } });
               }
+              // Always-on: no PII — tab, row, row-key, and existing lead _id only.
+              console.log(`[SyncInfo][linked] reason=email tab="${tabName}" R=${rowIndex} rowKey="${externalLeadId}" matchedLead=${byEmail._id} matchedLeadKey="${byEmail.externalLeadId || 'none'}" matchedLeadSource="${byEmail.externalSource || 'none'}"`);
               syncDiag(`LINKED_EMAIL tab="${tabName}" R=${rowIndex} key="${externalLeadId}" existingLead=${byEmail._id}`);
               linked++; continue;
             }
