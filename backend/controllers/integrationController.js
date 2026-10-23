@@ -1344,7 +1344,10 @@ exports.syncGoogleSheet = async (req, res, next) => {
 
           // ── Blank row: skip rows where every cell is empty / whitespace ───
           const isBlankRow = row.every(cell => !String(cell || '').trim());
-          if (isBlankRow) { blankRows++; continue; }
+          if (isBlankRow) {
+            syncDiag(`BLANK_ROW tab="${tabName}" R=${rowIndex}`);
+            blankRows++; continue;
+          }
 
           // ── Resolve phone first so it is available for the name fallback ──
           // Resolve phone: use phone_number column if it contains ≥7 digits;
@@ -1422,7 +1425,10 @@ exports.syncGoogleSheet = async (req, res, next) => {
             externalSource,
             $or: [{ spreadsheetId }, { spreadsheetId: { $in: [null, ''] } }],
           });
-          if (byKey) { skipped++; continue; }
+          if (byKey) {
+            syncDiag(`SKIP_EXISTING tab="${tabName}" R=${rowIndex} key="${externalLeadId}"`);
+            skipped++; continue;
+          }
 
           // Step 1b — Tombstone check: STRICT: only tombstones for this exact spreadsheet.
           // We intentionally do NOT use a legacy fallback ($in:[null,'']) here.
@@ -1451,6 +1457,7 @@ exports.syncGoogleSheet = async (req, res, next) => {
               if (!byPhone.externalLeadId) {
                 await Lead.updateOne({ _id: byPhone._id }, { $set: { externalLeadId, externalSource } });
               }
+              syncDiag(`LINKED_PHONE tab="${tabName}" R=${rowIndex} key="${externalLeadId}" existingLead=${byPhone._id}`);
               linked++; continue;
             }
           }
@@ -1464,6 +1471,7 @@ exports.syncGoogleSheet = async (req, res, next) => {
               if (!byEmail.externalLeadId) {
                 await Lead.updateOne({ _id: byEmail._id }, { $set: { externalLeadId, externalSource } });
               }
+              syncDiag(`LINKED_EMAIL tab="${tabName}" R=${rowIndex} key="${externalLeadId}" existingLead=${byEmail._id}`);
               linked++; continue;
             }
           }
@@ -1493,9 +1501,11 @@ exports.syncGoogleSheet = async (req, res, next) => {
             ...attribution,
             ...(pipelineId ? { pipelineId, stageId } : {}),
           });
+          syncDiag(`CREATED tab="${tabName}" R=${rowIndex} key="${externalLeadId}"`);
           created++;
 
         } catch (rowErr) {
+          syncDiag(`ROW_ERROR tab="${tabName}" R=${rowIndex} reason="${rowErr.message}"`);
           errors.push({ tab: tabName, row: rowIndex, reason: rowErr.message });
         }
       }
@@ -1534,6 +1544,15 @@ exports.syncGoogleSheet = async (req, res, next) => {
       (blankRows ? `, ${blankRows} blank row(s) ignored` : '') +
       (deletedSourceSkipped ? `, ${deletedSourceSkipped} previously-deleted skipped` : '') +
       (errors.length ? `, ${errors.length} error(s)` : '');
+
+    // Always-on row-disposition summary (no PII — counts only).
+    // Lets us audit why total imported < total sheet rows without needing GSHEETS_SYNC_DEBUG=true.
+    console.log(
+      `[SyncInfo][done] sheet="${spreadsheetId}" ` +
+      `created=${created} skipped=${skipped} linked=${linked} ` +
+      `blank=${blankRows} tombstoneBlocked=${deletedSourceSkipped} errors=${errors.length} ` +
+      `tabs=${JSON.stringify(tabsToSync)}`
+    );
 
     res.json({ success: true, created, skipped, linked, blankRows, deletedSourceSkipped, errors, message });
   } catch (e) { next(e); }
