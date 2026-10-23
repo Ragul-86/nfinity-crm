@@ -16,12 +16,15 @@
  *   7.  WA fallback NOT applied when phone_number is already valid
  *   8.  Blank row detection — truly blank rows counted, not imported
  *   9.  Non-blank row with only invalid phone and no name — still imported
- *   10. Duplicate sync — same externalLeadId never creates two leads
+ *   10. Duplicate sync — same externalLeadId never creates two leads (idempotent)
  *   11. No cross-merge — two rows with different invalid phones stay separate
- *   12. externalLeadId stamped on phone match for future dedup
+ *   12. Same phone on two distinct rows — both rows create separate CRM leads
  *   13. Tombstoned rows never re-imported
  *   14. Three tab types — Performance marketer, Intern leads, anonymous tab
  *   15. Row-index identity — R2 and R3 get distinct externalLeadIds
+ *   16. Same email on two distinct rows — both rows create separate CRM leads
+ *   17. Repeat sync — same row imported once, skipped on all subsequent syncs
+ *   18. Tenant isolation — same externalLeadId for two tenants creates two leads
  *
  * This is a pure-logic test — no MongoDB connection required.
  * All DB operations are replaced by in-memory stub objects.
@@ -56,10 +59,10 @@ const normalizeHeader   = (h) => String(h).trim().toLowerCase().replace(/[\s_-]+
  * @param {string}     spreadsheetId
  * @param {object[]}   existingLeads — In-memory "DB" of Lead documents.
  * @param {object[]}   tombstones    — In-memory "DB" of DeletedLeadSource documents.
- * @returns {{ created, skipped, linked, blankRows, errors, leads }}
+ * @returns {{ created, skipped, blankRows, errors, leads }}
  */
-function processRows(rawRows, tabName, spreadsheetId, existingLeads = [], tombstones = []) {
-  if (rawRows.length < 2) return { created: 0, skipped: 0, linked: 0, blankRows: 0, errors: [], leads: [...existingLeads] };
+function processRows(rawRows, tabName, spreadsheetId, existingLeads = [], tombstones = [], tenantIdOverride = 'tenant-1') {
+  if (rawRows.length < 2) return { created: 0, skipped: 0, blankRows: 0, errors: [], leads: [...existingLeads] };
 
   const originalHeaders = rawRows[0];
   const headers         = rawRows[0].map(normalizeHeader);
@@ -79,8 +82,8 @@ function processRows(rawRows, tabName, spreadsheetId, existingLeads = [], tombst
   }
 
   // NEW: no tab-level gate for missing name column
-  const tenantId = 'tenant-1';
-  let created = 0, skipped = 0, linked = 0, blankRows = 0;
+  const tenantId = tenantIdOverride;
+  let created = 0, skipped = 0, blankRows = 0;
   const errors = [];
   const leads  = [...existingLeads]; // mutable copy
 
@@ -128,39 +131,25 @@ function processRows(rawRows, tabName, spreadsheetId, existingLeads = [], tombst
       const externalLeadId = idColVal || `gsheets:${tabName}:R${rowIndex}`;
       const externalSource = 'google_sheets';
 
-      // Step 1: exact key dedup
-      const byKey = leads.find(l => l.externalLeadId === externalLeadId && l.externalSource === externalSource);
+      // Step 1: exact key dedup (idempotent re-sync)
+      const byKey = leads.find(l =>
+        l.tenantId === tenantId &&
+        l.externalLeadId === externalLeadId &&
+        l.externalSource === externalSource
+      );
       if (byKey) { skipped++; continue; }
 
-      // Step 1b: tombstone check
-      const tombstone = tombstones.find(t => t.tenantId === tenantId && t.externalSource === externalSource && t.externalLeadId === externalLeadId);
+      // Step 1b: tombstone check (intentional delete, spreadsheetId-scoped)
+      const tombstone = tombstones.find(t =>
+        t.tenantId === tenantId &&
+        t.externalSource === externalSource &&
+        t.externalLeadId === externalLeadId &&
+        (t.spreadsheetId === spreadsheetId || t.spreadsheetId === '')
+      );
       if (tombstone) { skipped++; continue; }
 
-      // Step 2: phone dedup
-      if (phone) {
-        const byPhone = leads.find(l => l.tenantId === tenantId && l.phone === phone);
-        if (byPhone) {
-          if (!byPhone.externalLeadId) {
-            byPhone.externalLeadId = externalLeadId;
-            byPhone.externalSource = externalSource;
-          }
-          linked++; continue;
-        }
-      }
-
-      // Step 3: email dedup
-      if (email) {
-        const byEmail = leads.find(l => l.tenantId === tenantId && l.email === email);
-        if (byEmail) {
-          if (!byEmail.externalLeadId) {
-            byEmail.externalLeadId = externalLeadId;
-            byEmail.externalSource = externalSource;
-          }
-          linked++; continue;
-        }
-      }
-
-      // Step 4: create
+      // Step 2: create (phone/email matching intentionally removed)
+      // Business requirement: every distinct valid source row must become its own CRM lead.
       leads.push({ tenantId, name, phone, email, company, budget, customFields, externalLeadId, externalSource, sheetName: tabName, spreadsheetId });
       created++;
 
@@ -169,7 +158,7 @@ function processRows(rawRows, tabName, spreadsheetId, existingLeads = [], tombst
     }
   }
 
-  return { created, skipped, linked, blankRows, errors, leads };
+  return { created, skipped, blankRows, errors, leads };
 }
 
 // ─── Test harness ─────────────────────────────────────────────────────────────
@@ -365,34 +354,28 @@ section('11. No cross-merge — two rows with different invalid phones are separ
   assert('three separate leads created', created, 3);
 }
 
-// ─── 12. externalLeadId stamped on phone match ───────────────────────────────
-section('12. externalLeadId stamped on phone match for future dedup');
+// ─── 12. Same phone on two distinct rows — both must be created ───────────────
+section('12. Same phone on two distinct rows — both create separate CRM leads');
 {
-  // Existing lead has no externalLeadId (e.g. manually added)
-  const existingLeads = [
-    { tenantId: 'tenant-1', name: 'Frank', phone: 'p:+911112223333', email: '', externalLeadId: null, externalSource: null },
-  ];
+  // Two different rows with identical phone numbers must both become leads.
+  // Phone matching no longer suppresses creation.
   const rows = [
-    ['Name', 'phone_number'],
-    ['Frank', 'p:+911112223333'],
+    ['Name', 'phone_number', 'Email'],
+    ['Lead A', 'p:+911112223333', 'a@x.com'],
+    ['Lead B', 'p:+911112223333', 'b@x.com'],  // same phone, different row
   ];
-  const { linked, leads } = processRows(rows, 'tab1', 'sheet1', existingLeads);
-  assert('linked = 1',          linked, 1);
-  // The existing lead should now have externalLeadId stamped
-  const frank = leads.find(l => l.name === 'Frank');
-  assert('externalLeadId stamped', frank.externalLeadId, 'gsheets:tab1:R2');
-  assert('externalSource stamped', frank.externalSource,  'google_sheets');
-
-  // On re-sync: Step 1 (exact key match) should now find it → skipped
-  const { skipped } = processRows(rows, 'tab1', 'sheet1', leads);
-  assert('next sync: skipped by key (not phone query)', skipped, 1);
+  const { created, skipped, leads } = processRows(rows, 'Intern leads', 'sheet1');
+  assert('both rows created (not suppressed by phone)',  created, 2);
+  assert('nothing skipped',                             skipped, 0);
+  assert('Lead A externalLeadId', leads[0].externalLeadId, 'gsheets:Intern leads:R2');
+  assert('Lead B externalLeadId', leads[1].externalLeadId, 'gsheets:Intern leads:R3');
 }
 
 // ─── 13. Tombstoned rows never re-imported ───────────────────────────────────
 section('13. Tombstoned rows are skipped');
 {
   const tombstones = [
-    { tenantId: 'tenant-1', externalSource: 'google_sheets', externalLeadId: 'gsheets:tab1:R2' },
+    { tenantId: 'tenant-1', externalSource: 'google_sheets', externalLeadId: 'gsheets:tab1:R2', spreadsheetId: 'sheet1' },
   ];
   const rows = [
     ['Name', 'Email'],
@@ -462,6 +445,64 @@ section('15. Row-index identity — adjacent rows get distinct externalLeadIds')
   assert('R2 externalLeadId', leads[0].externalLeadId, 'gsheets:tab1:R2');
   assert('R3 externalLeadId', leads[1].externalLeadId, 'gsheets:tab1:R3');
   assertFalse('IDs are distinct', leads[0].externalLeadId === leads[1].externalLeadId);
+}
+
+// ─── 16. Same email on two distinct rows — both must be created ──────────────
+section('16. Same email on two distinct rows — both create separate CRM leads');
+{
+  const rows = [
+    ['Name', 'Email', 'phone_number'],
+    ['Row A', 'shared@x.com', 'p:+911110000001'],
+    ['Row B', 'shared@x.com', 'p:+911110000002'],  // same email, different row
+  ];
+  const { created, skipped, leads } = processRows(rows, 'Intern leads', 'sheet1');
+  assert('both rows created (not suppressed by email)', created, 2);
+  assert('nothing skipped',                            skipped, 0);
+  assert('Row A externalLeadId', leads[0].externalLeadId, 'gsheets:Intern leads:R2');
+  assert('Row B externalLeadId', leads[1].externalLeadId, 'gsheets:Intern leads:R3');
+}
+
+// ─── 17. Repeat sync — idempotent per externalLeadId ─────────────────────────
+section('17. Repeat sync — same row skipped on every subsequent sync');
+{
+  const rows = [
+    ['Name', 'Email', 'phone_number'],
+    ['Alpha', 'alpha@x.com', 'p:+911230000000'],
+    ['Beta',  'beta@x.com',  'p:+911230000001'],
+  ];
+  // First sync: both created
+  const { created: c1, leads: leads1 } = processRows(rows, 'tab1', 'sheet1');
+  assert('first sync: 2 created', c1, 2);
+
+  // Second sync with same rows: both skipped by byKey
+  const { created: c2, skipped: s2 } = processRows(rows, 'tab1', 'sheet1', leads1);
+  assert('second sync: 0 created', c2, 0);
+  assert('second sync: 2 skipped', s2, 2);
+
+  // Third sync: still idempotent
+  const { created: c3, skipped: s3 } = processRows(rows, 'tab1', 'sheet1', leads1);
+  assert('third sync: 0 created',  c3, 0);
+  assert('third sync: 2 skipped',  s3, 2);
+}
+
+// ─── 18. Tenant isolation — same row key for two different tenants ────────────
+section('18. Tenant isolation — same externalLeadId for two tenants stays separate');
+{
+  const rows = [
+    ['Name', 'Email'],
+    ['Shared Name', 'contact@x.com'],
+  ];
+  // Tenant A: import row
+  const { leads: leadsA } = processRows(rows, 'tab1', 'sheet1', [], [], 'tenant-A');
+  assert('tenant A: 1 lead created', leadsA.length, 1);
+
+  // Tenant B: same row, same sheet — should ALSO create (different tenant)
+  const { created: cB } = processRows(rows, 'tab1', 'sheet1', leadsA, [], 'tenant-B');
+  assert('tenant B: 1 lead created independently', cB, 1);
+
+  // Tenant A re-sync: should skip (its own lead in existingLeads)
+  const { skipped: sA } = processRows(rows, 'tab1', 'sheet1', leadsA, [], 'tenant-A');
+  assert('tenant A: re-sync skips its own lead', sA, 1);
 }
 
 // ─── Bonus: WA column NOT clobbered by phone column (header order safety) ─────

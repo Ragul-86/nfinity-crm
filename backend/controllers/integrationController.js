@@ -1198,7 +1198,7 @@ exports.resetSheetTombstones = async (req, res, next) => {
 //     { tab, rowNumber, rowKey, disposition, matchedLeadId, matchedLeadKey,
 //       matchedLeadSource, tombstoneId, tombstoneKey }
 //   ],
-//   summary: { skipped, tombstoneBlocked, linkedPhone, linkedEmail, wouldCreate, blank, error }
+//   summary: { skipped, tombstoneBlocked, wouldCreate, blank, error }
 // }
 // ─────────────────────────────────────────────────────────────────────────────
 exports.diagLinkedRows = async (req, res, next) => {
@@ -1253,7 +1253,7 @@ exports.diagLinkedRows = async (req, res, next) => {
     const Lead              = require('../models/Lead');
     const DeletedLeadSource = require('../models/DeletedLeadSource');
     const rows   = [];
-    const summary = { skipped: 0, tombstoneBlocked: 0, linkedPhone: 0, linkedEmail: 0, wouldCreate: 0, blank: 0, error: 0 };
+    const summary = { skipped: 0, tombstoneBlocked: 0, wouldCreate: 0, blank: 0, error: 0 };
 
     for (const tabName of tabsToScan) {
       const range     = encodeURIComponent(tabName);
@@ -1328,38 +1328,7 @@ exports.diagLinkedRows = async (req, res, next) => {
             rows.push(entry); continue;
           }
 
-          // Step 2: phone
-          if (phone) {
-            const byPhone = await Lead.findOne(
-              { tenantId: tf.tenantId, phone, spreadsheetId },
-              { _id: 1, externalLeadId: 1, externalSource: 1 }
-            ).lean();
-            if (byPhone) {
-              entry.disposition       = 'linkedPhone';
-              entry.matchedLeadId     = byPhone._id;
-              entry.matchedLeadKey    = byPhone.externalLeadId || 'none';
-              entry.matchedLeadSource = byPhone.externalSource || 'none';
-              summary.linkedPhone++;
-              rows.push(entry); continue;
-            }
-          }
-
-          // Step 3: email
-          if (email) {
-            const byEmail = await Lead.findOne(
-              { tenantId: tf.tenantId, email, spreadsheetId },
-              { _id: 1, externalLeadId: 1, externalSource: 1 }
-            ).lean();
-            if (byEmail) {
-              entry.disposition       = 'linkedEmail';
-              entry.matchedLeadId     = byEmail._id;
-              entry.matchedLeadKey    = byEmail.externalLeadId || 'none';
-              entry.matchedLeadSource = byEmail.externalSource || 'none';
-              summary.linkedEmail++;
-              rows.push(entry); continue;
-            }
-          }
-
+          // Step 2: would create (phone/email matching removed — each row creates its own lead)
           // Would create
           entry.disposition = 'wouldCreate';
           summary.wouldCreate++;
@@ -1388,13 +1357,15 @@ exports.diagLinkedRows = async (req, res, next) => {
 // POST /api/integrations/google_sheets/sync
 // Read all rows from the configured sheet and upsert as Leads.
 //
-// Deduplication — four ordered steps (deterministic, no broad OR upsert):
-//   1. Exact sourceKey match  → skip (never overwrite CRM data)
-//   2. Phone match (separate) → link only if lead has no existing externalLeadId
-//   3. Email match (separate) → link only if lead has no existing externalLeadId
-//   4. No match               → create new Lead
+// Deduplication — two ordered steps (deterministic, no broad OR upsert):
+//   1. Exact sourceKey match (externalLeadId) → skip (idempotent re-sync)
+//   1b. Tombstone check (spreadsheetId-scoped) → skip (intentionally deleted)
+//   2. No match → create new Lead
 //
-// Returns { created, skipped, linked, errors[] }
+// Phone/email matching is intentionally absent: every distinct valid sheet row
+// must create its own CRM lead record, even with duplicate contact details.
+//
+// Returns { created, skipped, errors[] }
 // ─────────────────────────────────────────────────────────────────────────────
 exports.syncGoogleSheet = async (req, res, next) => {
   try {
@@ -1470,7 +1441,7 @@ exports.syncGoogleSheet = async (req, res, next) => {
           { ...tf, provider: 'google_sheets' },
           { $set: { 'syncSettings.lastSync': new Date(), 'syncSettings.lastSyncStatus': 'success', 'syncSettings.lastSyncError': null } }
         );
-        return res.json({ success: true, created: 0, skipped: 0, linked: 0, errors: [], message: 'No tabs found in the spreadsheet.' });
+        return res.json({ success: true, created: 0, skipped: 0, errors: [], message: 'No tabs found in the spreadsheet.' });
       }
     } else {
       tabsToSync = [sheetName];
@@ -1478,7 +1449,7 @@ exports.syncGoogleSheet = async (req, res, next) => {
 
     const Lead = require('../models/Lead');
     const DeletedLeadSource = require('../models/DeletedLeadSource');
-    let created = 0, skipped = 0, linked = 0, deletedSourceSkipped = 0, blankRows = 0;
+    let created = 0, skipped = 0, deletedSourceSkipped = 0, blankRows = 0;
     const errors = [];
 
     // ── Always-on tombstone count diagnostic (no PII — counts only) ────────
@@ -1661,40 +1632,11 @@ exports.syncGoogleSheet = async (req, res, next) => {
             deletedSourceSkipped++; continue;
           }
 
-          // Step 2 — Secondary: phone match — STRICT: same spreadsheet only.
-          // Two different spreadsheets with the same phone number create two separate leads.
-          // Never link or merge a lead across spreadsheets via phone.
-          if (phone) {
-            const byPhone = await Lead.findOne({ tenantId: tf.tenantId, phone, spreadsheetId });
-            if (byPhone) {
-              // Only link if no existing external key (within same spreadsheet)
-              if (!byPhone.externalLeadId) {
-                await Lead.updateOne({ _id: byPhone._id }, { $set: { externalLeadId, externalSource } });
-              }
-              // Always-on: no PII — tab, row, row-key, and existing lead _id only.
-              console.log(`[SyncInfo][linked] reason=phone tab="${tabName}" R=${rowIndex} rowKey="${externalLeadId}" matchedLead=${byPhone._id} matchedLeadKey="${byPhone.externalLeadId || 'none'}" matchedLeadSource="${byPhone.externalSource || 'none'}"`);
-              syncDiag(`LINKED_PHONE tab="${tabName}" R=${rowIndex} key="${externalLeadId}" existingLead=${byPhone._id}`);
-              linked++; continue;
-            }
-          }
-
-          // Step 3 — Tertiary: email match — STRICT: same spreadsheet only.
-          // Two different spreadsheets with the same email create two separate leads.
-          // Never link or merge a lead across spreadsheets via email.
-          if (email) {
-            const byEmail = await Lead.findOne({ tenantId: tf.tenantId, email, spreadsheetId });
-            if (byEmail) {
-              if (!byEmail.externalLeadId) {
-                await Lead.updateOne({ _id: byEmail._id }, { $set: { externalLeadId, externalSource } });
-              }
-              // Always-on: no PII — tab, row, row-key, and existing lead _id only.
-              console.log(`[SyncInfo][linked] reason=email tab="${tabName}" R=${rowIndex} rowKey="${externalLeadId}" matchedLead=${byEmail._id} matchedLeadKey="${byEmail.externalLeadId || 'none'}" matchedLeadSource="${byEmail.externalSource || 'none'}"`);
-              syncDiag(`LINKED_EMAIL tab="${tabName}" R=${rowIndex} key="${externalLeadId}" existingLead=${byEmail._id}`);
-              linked++; continue;
-            }
-          }
-
-          // Step 4 — Pipeline resolution
+          // Step 2 — Pipeline resolution
+          // NOTE: Phone/email matching was intentionally removed.
+          // Business requirement: every distinct valid source row must become its own CRM lead,
+          // even if another lead shares the same phone or email.
+          // Row identity is guaranteed by externalLeadId (Steps 1 + 1b above).
           const { pipelineId, stageId } = await resolvePipelineGS(tf.tenantId, {
             adId:       attribution.adId,
             metaFormId: attribution.metaFormId,
@@ -1728,7 +1670,7 @@ exports.syncGoogleSheet = async (req, res, next) => {
         }
       }
       // ── end row loop for tabName ──────────────────────────────────────────
-      syncDiag(`DONE tab="${tabName}" sheet="${spreadsheetId}" created=${created} skipped=${skipped} linked=${linked} tombstoneBlocked=${deletedSourceSkipped}`);
+      syncDiag(`DONE tab="${tabName}" sheet="${spreadsheetId}" created=${created} skipped=${skipped} tombstoneBlocked=${deletedSourceSkipped}`);
     }
     // ── end tab loop ─────────────────────────────────────────────────────────
 
@@ -1741,7 +1683,7 @@ exports.syncGoogleSheet = async (req, res, next) => {
         $set: {
           status:                          'connected',
           'syncSettings.lastSync':         now,
-          'syncSettings.lastSyncStatus':   errors.length && !created && !linked ? 'failed' : 'success',
+          'syncSettings.lastSyncStatus':   errors.length && !created ? 'failed' : 'success',
           'syncSettings.lastSyncError':    syncErrMsg,
         },
       }
@@ -1754,11 +1696,11 @@ exports.syncGoogleSheet = async (req, res, next) => {
       tenantId:    tf.tenantId,
       resourceId:  'google_sheets',
       resourceType:'integration',
-      details:     { spreadsheetId, syncMode, tabs: tabsToSync, created, skipped, linked, blankRows, deletedSourceSkipped, errors: errors.length },
+      details:     { spreadsheetId, syncMode, tabs: tabsToSync, created, skipped, blankRows, deletedSourceSkipped, errors: errors.length },
       req,
     });
 
-    const message = `Sync complete — ${created} new, ${skipped} skipped, ${linked} linked` +
+    const message = `Sync complete — ${created} new, ${skipped} skipped` +
       (blankRows ? `, ${blankRows} blank row(s) ignored` : '') +
       (deletedSourceSkipped ? `, ${deletedSourceSkipped} previously-deleted skipped` : '') +
       (errors.length ? `, ${errors.length} error(s)` : '');
@@ -1767,12 +1709,12 @@ exports.syncGoogleSheet = async (req, res, next) => {
     // Lets us audit why total imported < total sheet rows without needing GSHEETS_SYNC_DEBUG=true.
     console.log(
       `[SyncInfo][done] sheet="${spreadsheetId}" ` +
-      `created=${created} skipped=${skipped} linked=${linked} ` +
+      `created=${created} skipped=${skipped} ` +
       `blank=${blankRows} tombstoneBlocked=${deletedSourceSkipped} errors=${errors.length} ` +
       `tabs=${JSON.stringify(tabsToSync)}`
     );
 
-    res.json({ success: true, created, skipped, linked, blankRows, deletedSourceSkipped, errors, message });
+    res.json({ success: true, created, skipped, blankRows, deletedSourceSkipped, errors, message });
   } catch (e) { next(e); }
 };
 

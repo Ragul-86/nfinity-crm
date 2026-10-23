@@ -338,31 +338,11 @@ async function syncTab(accessToken, tenantId, spreadsheetId, tabName) {
         deletedSourceSkipped++; continue;
       }
 
-      // Step 2: phone dedup — STRICT: same spreadsheet only.
-      // Two different spreadsheets with the same phone number create two separate leads.
-      if (phone) {
-        const byPhone = await Lead.findOne({ tenantId, phone, spreadsheetId });
-        if (byPhone) {
-          if (!byPhone.externalLeadId) {
-            await Lead.updateOne({ _id: byPhone._id }, { $set: { externalLeadId, externalSource } });
-          }
-          skipped++; continue;
-        }
-      }
-
-      // Step 3: email dedup — STRICT: same spreadsheet only.
-      // Two different spreadsheets with the same email create two separate leads.
-      if (email) {
-        const byEmail = await Lead.findOne({ tenantId, email, spreadsheetId });
-        if (byEmail) {
-          if (!byEmail.externalLeadId) {
-            await Lead.updateOne({ _id: byEmail._id }, { $set: { externalLeadId, externalSource } });
-          }
-          skipped++; continue;
-        }
-      }
-
-      // Step 4: pipeline resolution
+      // Step 2: pipeline resolution
+      // NOTE: Phone/email matching was intentionally removed.
+      // Business requirement: every distinct valid source row must become its own CRM lead,
+      // even if another lead shares the same phone or email.
+      // Row identity is guaranteed by externalLeadId (Steps 1 + 1b above).
       const { pipelineId, stageId } = await resolvePipeline(tenantId, {
         adId:       attribution.adId,
         metaFormId: attribution.metaFormId,
