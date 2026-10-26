@@ -502,8 +502,12 @@ exports.syncAllGoogleSheets = async (req, res) => {
   const summary   = { processed: 0, totalCreated: 0, totalSkipped: 0, totalDeletedSourceSkipped: 0, totalBlankRows: 0, errors: 0, details: [] };
 
   try {
-    // ── 2. Find all connected Google Sheets integrations (all tenants) ──────
-    const docs = await Integration.find({ provider: 'google_sheets', status: 'connected' }).lean();
+    // ── 2. Find all connected (and expired) Google Sheets integrations (all tenants) ──
+    // Expired integrations are included so the cron can attempt token refresh and
+    // automatically restore status:'connected' if the refresh token is still valid.
+    // getOrRefreshToken handles the refresh and resets status on success; if the
+    // refresh token is revoked/missing it throws and status remains 'expired'.
+    const docs = await Integration.find({ provider: 'google_sheets', status: { $in: ['connected', 'expired'] } }).lean();
 
     console.log(`[AutoSync] Starting — ${docs.length} connected Google Sheets integration(s)`);
 

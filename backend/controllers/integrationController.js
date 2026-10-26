@@ -1372,7 +1372,11 @@ exports.syncGoogleSheet = async (req, res, next) => {
     const tf  = getTenantFilter(req);
     const doc = await Integration.findOne({ ...tf, provider: 'google_sheets' });
     if (!doc)                      return next(err('Google Sheets is not connected', 404));
-    if (doc.status !== 'connected' && doc.status !== 'sync_error')
+    if (
+      doc.status !== 'connected' &&
+      doc.status !== 'sync_error' &&
+      doc.status !== 'expired'
+    )
       return next(err('Google Sheets is not connected. Please connect first.', 400));
 
     // Multi-sheet support: read primary sheet from config.spreadsheets if available,
