@@ -1832,6 +1832,9 @@ exports.getGoogleSheetsContexts = async (req, res, next) => {
         syncMode,
         tabs:          tabsForSelector,
         totalLeads:    leadEntry?.totalLeads || 0,
+        // true  → leads in DB have this real spreadsheetId stored (indexed sync)
+        // false → leads came from the legacy null bucket (synced before spreadsheetId field existed)
+        leadsHaveSpreadsheetId: !!(leadMap[sid]),
       });
 
       delete leadMap[sid]; // mark as processed

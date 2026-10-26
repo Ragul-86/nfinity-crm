@@ -33,11 +33,16 @@ exports.getLeads = async (req, res, next) => {
 
     // Pre-process special query values that APIFeatures cannot handle natively:
     // - externalSource=all_sheets  → { $in: ['google_sheet', 'google_sheets'] }
+    // - spreadsheetId=__null__     → { spreadsheetId: null }  (legacy leads without a stored ID)
     // These are applied directly to tf so MongoDB gets the correct operator.
     const qs = { ...req.query };
     if (qs.externalSource === 'all_sheets') {
       tf.externalSource = { $in: ['google_sheet', 'google_sheets'] };
       delete qs.externalSource;
+    }
+    if (qs.spreadsheetId === '__null__') {
+      tf.spreadsheetId = null;   // matches documents where spreadsheetId is null or absent
+      delete qs.spreadsheetId;
     }
 
     const baseQuery = Lead.find(tf)

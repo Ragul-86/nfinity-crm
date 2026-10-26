@@ -9,9 +9,12 @@
  *   ?sheetName=Performance%20Marketer — selected tab (scopes all data below)
  *
  * Filter strategy:
- *   Backend calls use  sheetName + externalSource=all_sheets.
- *   spreadsheetId is NOT sent to the API — existing leads have spreadsheetId: null
- *   (synced before the field was added).  spreadsheetId only drives the UI selector.
+ *   Backend calls use sheetName + externalSource=all_sheets + spreadsheetId.
+ *   When a spreadsheet's leads are indexed (leadsHaveSpreadsheetId=true), the real
+ *   spreadsheetId is sent.  When they are legacy (synced before the field was added),
+ *   the sentinel '__null__' is sent — but ONLY when totalLeads>0 confirms this sheet
+ *   consumed the null bucket.  Zero-lead sheets receive their real spreadsheetId so
+ *   the query returns zero results instead of leaking another sheet's legacy leads.
  *
  * Tenant isolation:
  *   sheetName comes from URL but the backend always AND-s it with tenantId from JWT.
@@ -190,9 +193,22 @@ export default function GSheetLeadsDashboard() {
 
   // ── 6. Source filter passed to SalesPipeline ──────────────────────────────
   // sheetName may be null (= All Tabs) — the backend handles both cases.
-  const sourceFilter = useMemo(() => ({
-    sheetName: sheetName || null,
-  }), [sheetName])
+  // spreadsheetId scopes the query to the selected spreadsheet:
+  //   - real spreadsheetId when leadsHaveSpreadsheetId=true (indexed sync)
+  //   - '__null__' sentinel ONLY when leadsHaveSpreadsheetId=false AND totalLeads>0
+  //     (sheet consumed the null bucket → confirmed owner of legacy null-ID leads)
+  //   - real spreadsheetId when leadsHaveSpreadsheetId=false AND totalLeads=0
+  //     (zero-lead sheet — real ID matches nothing, returns empty without leaking)
+  const sourceFilter = useMemo(() => {
+    const filter = { sheetName: sheetName || null }
+    if (selectedSS) {
+      // Gate the __null__ sentinel on totalLeads>0 so that sheets which did not
+      // consume the legacy null bucket don't accidentally show another sheet's leads.
+      const hasLegacyLeads = !selectedSS.leadsHaveSpreadsheetId && (selectedSS.totalLeads || 0) > 0
+      filter.spreadsheetId = hasLegacyLeads ? '__null__' : selectedSS.spreadsheetId
+    }
+    return filter
+  }, [sheetName, selectedSS])
 
   // ── Not connected warning ──────────────────────────────────────────────────
   const noSheets = !loadingContexts && !spreadsheets.length

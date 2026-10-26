@@ -576,15 +576,16 @@ export default function SalesPipeline({ sourceFilter = null, initialPipelineId =
   }, [search, filterSource, filterPriority, filterAssigned])
 
   const { data: leadsData, isLoading: loadingLeads } = useQuery({
-    // Include sourceFilter?.sheetName in the key so the query re-runs when sheet changes
-    queryKey: ['pipeline-kanban', selectedPipelineId, kanbanParams, sourceFilter?.sheetName ?? '__all__'],
+    // Include sheetName + spreadsheetId in the key so the query re-runs when either changes
+    queryKey: ['pipeline-kanban', selectedPipelineId, kanbanParams, sourceFilter?.sheetName ?? '__all__', sourceFilter?.spreadsheetId ?? '__any__'],
     queryFn: () => {
       if (!selectedPipelineId) return Promise.resolve([])
       const params = { pipelineId: selectedPipelineId, limit: 1000, ...kanbanParams }
-      // When a Google Sheet context is active, scope leads to that source/tab
+      // When a Google Sheet context is active, scope leads to that source/tab/spreadsheet
       if (sourceFilter) {
         params.externalSource = 'all_sheets'   // backend expands to { $in: ['google_sheet','google_sheets'] }
-        if (sourceFilter.sheetName) params.sheetName = sourceFilter.sheetName
+        if (sourceFilter.sheetName)      params.sheetName      = sourceFilter.sheetName
+        if (sourceFilter.spreadsheetId)  params.spreadsheetId  = sourceFilter.spreadsheetId
       }
       return api.get('/leads', { params }).then(r => r.data.data || [])
     },
