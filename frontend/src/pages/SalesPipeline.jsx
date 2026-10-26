@@ -856,6 +856,7 @@ export default function SalesPipeline({ sourceFilter = null, initialPipelineId =
             <Input className="pl-8 w-44 h-9" placeholder="Search leads…" value={search} onChange={e => setSearch(e.target.value)} />
           </div>
           <Button
+            type="button"
             variant={hasFilters ? 'default' : 'outline'}
             size="sm" className="gap-1.5"
             onClick={() => setShowFilters(v => !v)}
@@ -873,9 +874,8 @@ export default function SalesPipeline({ sourceFilter = null, initialPipelineId =
       </div>
 
       {/* ── Filters Row ────────────────────────────────────────────────────── */}
-      {showFilters && (
-        <div className="mb-4">
-          <div className="flex flex-wrap gap-2 p-3 bg-card border border-border rounded-xl">
+      <div style={{ display: showFilters ? undefined : 'none' }} className="mb-4">
+          <div className="flex flex-wrap gap-2 p-3 bg-muted border border-border rounded-xl">
             <Select value={filterSource} onValueChange={setFilterSource}>
               <SelectTrigger className="w-40 h-8 text-xs"><SelectValue placeholder="All Sources" /></SelectTrigger>
               <SelectContent>
@@ -904,7 +904,6 @@ export default function SalesPipeline({ sourceFilter = null, initialPipelineId =
             )}
           </div>
         </div>
-      )}
 
       {/* ── KPI Bar ────────────────────────────────────────────────────────── */}
       {activePipeline && <KpiBar leads={leadsData} pipelineName={activePipeline.name} />}
