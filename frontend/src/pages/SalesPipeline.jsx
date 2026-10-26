@@ -873,40 +873,38 @@ export default function SalesPipeline({ sourceFilter = null, initialPipelineId =
       </div>
 
       {/* ── Filters Row ────────────────────────────────────────────────────── */}
-      <AnimatePresence>
-        {showFilters && (
-          <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="overflow-hidden mb-4">
-            <div className="flex flex-wrap gap-2 p-3 bg-card border border-border rounded-xl">
-              <Select value={filterSource} onValueChange={setFilterSource}>
-                <SelectTrigger className="w-40 h-8 text-xs"><SelectValue placeholder="All Sources" /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="">All Sources</SelectItem>
-                  {SOURCES.map(s => <SelectItem key={s} value={s} className="capitalize text-xs">{s.replace(/_/g, ' ')}</SelectItem>)}
-                </SelectContent>
-              </Select>
-              <Select value={filterPriority} onValueChange={setFilterPriority}>
-                <SelectTrigger className="w-36 h-8 text-xs"><SelectValue placeholder="All Priorities" /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="">All Priorities</SelectItem>
-                  {PRIORITIES.map(p => <SelectItem key={p} value={p} className="capitalize text-xs">{p}</SelectItem>)}
-                </SelectContent>
-              </Select>
-              <Select value={filterAssigned} onValueChange={setFilterAssigned}>
-                <SelectTrigger className="w-44 h-8 text-xs"><SelectValue placeholder="All Assigned" /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="">All Assigned</SelectItem>
-                  {(employees || []).map(e => <SelectItem key={e._id} value={e._id} className="text-xs">{e.name}</SelectItem>)}
-                </SelectContent>
-              </Select>
-              {hasFilters && (
-                <Button size="sm" variant="ghost" className="h-8 text-xs" onClick={() => { setFilterSource(''); setFilterPriority(''); setFilterAssigned('') }}>
-                  <X className="w-3.5 h-3.5 mr-1" />Clear
-                </Button>
-              )}
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      {showFilters && (
+        <div className="mb-4">
+          <div className="flex flex-wrap gap-2 p-3 bg-card border border-border rounded-xl">
+            <Select value={filterSource} onValueChange={setFilterSource}>
+              <SelectTrigger className="w-40 h-8 text-xs"><SelectValue placeholder="All Sources" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="">All Sources</SelectItem>
+                {SOURCES.map(s => <SelectItem key={s} value={s} className="capitalize text-xs">{s.replace(/_/g, ' ')}</SelectItem>)}
+              </SelectContent>
+            </Select>
+            <Select value={filterPriority} onValueChange={setFilterPriority}>
+              <SelectTrigger className="w-36 h-8 text-xs"><SelectValue placeholder="All Priorities" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="">All Priorities</SelectItem>
+                {PRIORITIES.map(p => <SelectItem key={p} value={p} className="capitalize text-xs">{p}</SelectItem>)}
+              </SelectContent>
+            </Select>
+            <Select value={filterAssigned} onValueChange={setFilterAssigned}>
+              <SelectTrigger className="w-44 h-8 text-xs"><SelectValue placeholder="All Assigned" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="">All Assigned</SelectItem>
+                {(employees || []).map(e => <SelectItem key={e._id} value={e._id} className="text-xs">{e.name}</SelectItem>)}
+              </SelectContent>
+            </Select>
+            {hasFilters && (
+              <Button size="sm" variant="ghost" className="h-8 text-xs" onClick={() => { setFilterSource(''); setFilterPriority(''); setFilterAssigned('') }}>
+                <X className="w-3.5 h-3.5 mr-1" />Clear
+              </Button>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* ── KPI Bar ────────────────────────────────────────────────────────── */}
       {activePipeline && <KpiBar leads={leadsData} pipelineName={activePipeline.name} />}
