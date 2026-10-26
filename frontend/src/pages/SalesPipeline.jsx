@@ -876,24 +876,24 @@ export default function SalesPipeline({ sourceFilter = null, initialPipelineId =
       {/* ── Filters Row ────────────────────────────────────────────────────── */}
       <div style={{ display: showFilters ? undefined : 'none' }} className="mb-4">
           <div className="flex flex-wrap gap-2 p-3 bg-muted border border-border rounded-xl">
-            <Select value={filterSource} onValueChange={setFilterSource}>
+            <Select value={filterSource || '__all__'} onValueChange={v => setFilterSource(v === '__all__' ? '' : v)}>
               <SelectTrigger className="w-40 h-8 text-xs"><SelectValue placeholder="All Sources" /></SelectTrigger>
               <SelectContent>
-                <SelectItem value="">All Sources</SelectItem>
+                <SelectItem value="__all__">All Sources</SelectItem>
                 {SOURCES.map(s => <SelectItem key={s} value={s} className="capitalize text-xs">{s.replace(/_/g, ' ')}</SelectItem>)}
               </SelectContent>
             </Select>
-            <Select value={filterPriority} onValueChange={setFilterPriority}>
+            <Select value={filterPriority || '__all__'} onValueChange={v => setFilterPriority(v === '__all__' ? '' : v)}>
               <SelectTrigger className="w-36 h-8 text-xs"><SelectValue placeholder="All Priorities" /></SelectTrigger>
               <SelectContent>
-                <SelectItem value="">All Priorities</SelectItem>
+                <SelectItem value="__all__">All Priorities</SelectItem>
                 {PRIORITIES.map(p => <SelectItem key={p} value={p} className="capitalize text-xs">{p}</SelectItem>)}
               </SelectContent>
             </Select>
-            <Select value={filterAssigned} onValueChange={setFilterAssigned}>
+            <Select value={filterAssigned || '__all__'} onValueChange={v => setFilterAssigned(v === '__all__' ? '' : v)}>
               <SelectTrigger className="w-44 h-8 text-xs"><SelectValue placeholder="All Assigned" /></SelectTrigger>
               <SelectContent>
-                <SelectItem value="">All Assigned</SelectItem>
+                <SelectItem value="__all__">All Assigned</SelectItem>
                 {(employees || []).map(e => <SelectItem key={e._id} value={e._id} className="text-xs">{e.name}</SelectItem>)}
               </SelectContent>
             </Select>
