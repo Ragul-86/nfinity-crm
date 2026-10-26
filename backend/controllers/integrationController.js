@@ -762,7 +762,7 @@ async function getOrRefreshToken(doc, tf) {
   const newCreds = encryptCreds('google_sheets', { ...creds, accessToken: newToken });
   await Integration.findOneAndUpdate(
     { ...tf, provider: 'google_sheets' },
-    { $set: { credentials: newCreds, 'config.tokenExpiresAt': newExpiry } }
+    { $set: { credentials: newCreds, 'config.tokenExpiresAt': newExpiry, status: 'connected' } }
   );
 
   return newToken;

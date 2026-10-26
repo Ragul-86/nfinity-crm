@@ -118,7 +118,7 @@ async function getOrRefreshToken(doc, tenantId) {
 
   await Integration.findOneAndUpdate(
     { tenantId, provider: 'google_sheets' },
-    { $set: { credentials: newCreds, 'config.tokenExpiresAt': newExpiry } }
+    { $set: { credentials: newCreds, 'config.tokenExpiresAt': newExpiry, status: 'connected' } }
   );
   return newToken;
 }
