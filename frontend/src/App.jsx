@@ -34,6 +34,7 @@ import Leads from '@/pages/Leads'
 import LeadSources from '@/pages/LeadSources'
 import LeadStreamDashboard from '@/pages/LeadStreamDashboard'
 import GSheetLeadsDashboard from '@/pages/GSheetLeadsDashboard'
+import GSheetLeadsTable from '@/pages/GSheetLeadsTable'
 import LeadForms from '@/pages/LeadForms'
 import FinanceWorkspace from '@/pages/FinanceWorkspace'
 import OperationsWorkspace from '@/pages/OperationsWorkspace'
@@ -150,6 +151,7 @@ function App() {
                   <Route path="/pipeline/*" element={<SalesPipeline />} />
                   <Route path="/crm-leads/*" element={<Leads />} />
                   <Route path="/leads/dashboard" element={<GSheetLeadsDashboard />} />
+                  <Route path="/leads/sheet-table" element={<GSheetLeadsTable />} />
                   <Route path="/leads/sources" element={<LeadSources />} />
                   <Route path="/leads/sources/:streamType/:streamKey" element={<LeadStreamDashboard />} />
                   <Route path="/lead-forms/*" element={<LeadForms />} />
