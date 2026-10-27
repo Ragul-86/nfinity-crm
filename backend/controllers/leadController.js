@@ -298,6 +298,12 @@ exports.getPipelineBreakdown = async (req, res, next) => {
     if (req.query.sheetName)      streamFilter.sheetName      = req.query.sheetName;
     if (req.query.source)         streamFilter.source         = req.query.source;
     if (req.query.campaignId)     streamFilter.campaignId     = req.query.campaignId;
+    // spreadsheetId filter — same sentinel convention as getLeads
+    if (req.query.spreadsheetId === '__null__') {
+      streamFilter.spreadsheetId = null;   // matches docs where spreadsheetId is null or absent (legacy)
+    } else if (req.query.spreadsheetId) {
+      streamFilter.spreadsheetId = req.query.spreadsheetId;
+    }
     if (req.query.externalSource) {
       if (req.query.externalSource === 'all_sheets') {
         streamFilter.externalSource = { $in: ['google_sheet', 'google_sheets'] };

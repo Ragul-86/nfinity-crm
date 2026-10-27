@@ -36,8 +36,9 @@ const pipelineMappingSchema = new mongoose.Schema({
   adId:       { type: String, default: null },   // Meta ad_id
   adName:     { type: String, default: null },   // Meta ad_name (less reliable, use adId when possible)
   metaFormId: { type: String, default: null },   // Meta form_id
-  sheetName:  { type: String, default: null },   // Google Sheet tab name
-  source:     { type: String, default: null },   // Lead source field (e.g. 'facebook_ads')
+  sheetName:     { type: String, default: null },   // Google Sheet tab name
+  spreadsheetId: { type: String, default: null },   // Google Spreadsheet ID (null = tab-name-only fallback)
+  source:        { type: String, default: null },   // Lead source field (e.g. 'facebook_ads')
 
   // Optional: override which stage the lead starts in.
   // If null, uses the pipeline's first OPEN stage.
@@ -54,6 +55,8 @@ const pipelineMappingSchema = new mongoose.Schema({
 pipelineMappingSchema.index({ tenantId: 1, adId: 1 });
 pipelineMappingSchema.index({ tenantId: 1, metaFormId: 1 });
 pipelineMappingSchema.index({ tenantId: 1, sheetName: 1 });
+// Per-spreadsheet-per-tab mapping (higher priority than sheetName-only)
+pipelineMappingSchema.index({ tenantId: 1, spreadsheetId: 1, sheetName: 1 });
 pipelineMappingSchema.index({ tenantId: 1, source: 1 });
 pipelineMappingSchema.index({ tenantId: 1, isActive: 1 });
 

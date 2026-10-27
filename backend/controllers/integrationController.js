@@ -687,13 +687,15 @@ function normaliseSrcGS(raw) {
 }
 
 // Pipeline resolution for native Google Sheets sync — mirrors gsheetWebhookController
-async function resolvePipelineGS(tenantId, { adId, metaFormId, sheetName, source }) {
+async function resolvePipelineGS(tenantId, { adId, metaFormId, spreadsheetId, sheetName, source }) {
   try {
     const tiers = [
-      adId       ? { adId }       : null,
-      metaFormId ? { metaFormId } : null,
-      sheetName  ? { sheetName }  : null,
-      source     ? { source }     : null,
+      adId                           ? { adId }                               : null,
+      metaFormId                     ? { metaFormId }                         : null,
+      // Tier 3 (new): per-spreadsheet per-tab — more specific than sheetName alone
+      (spreadsheetId && sheetName)   ? { spreadsheetId, sheetName }           : null,
+      sheetName                      ? { sheetName }                          : null,
+      source                         ? { source }                             : null,
     ].filter(Boolean);
 
     let pipeline = null, stageOverride = null;
@@ -900,11 +902,19 @@ exports.verifySheetAccess = async (req, res, next) => {
 exports.saveSheetConfig = async (req, res, next) => {
   try {
     const tf = getTenantFilter(req);
-    const { spreadsheetId, sheetName, selectedFileName, syncMode: rawSyncMode } = req.body || {};
+    const { spreadsheetId, sheetName, selectedFileName, syncMode: rawSyncMode, pipelineId: rawPipelineId } = req.body || {};
     const syncMode = rawSyncMode === 'all' ? 'all' : 'single'; // default 'single'
 
     if (!spreadsheetId) return next(err('spreadsheetId is required'));
     if (syncMode === 'single' && !sheetName) return next(err('sheetName is required when syncMode is "single"'));
+
+    // ── Validate pipelineId if provided — must belong to this tenant and be active ──
+    let validatedPipelineId = null;
+    if (rawPipelineId) {
+      const pipeline = await Pipeline.findOne({ _id: rawPipelineId, ...tf, isActive: true }).lean();
+      if (!pipeline) return next(err('Invalid or inactive pipeline', 400));
+      validatedPipelineId = pipeline._id.toString();
+    }
 
     const doc = await Integration.findOne({ ...tf, provider: 'google_sheets' });
     if (!doc) return next(err('Google Sheets is not connected', 404));
@@ -930,16 +940,40 @@ exports.saveSheetConfig = async (req, res, next) => {
               updatedAt:     doc.updatedAt        || new Date(),
             }]
           : [];
+
+    // Preserve the existing pipelineId when no new one is explicitly provided
+    const existingIdx = existingSheets.findIndex(s => s.spreadsheetId === String(spreadsheetId).trim());
+    const existingEntry = existingIdx >= 0 ? existingSheets[existingIdx] : null;
+    const preservedPipelineId = validatedPipelineId || existingEntry?.pipelineId || null;
+
     const newEntry = {
       spreadsheetId: String(spreadsheetId).trim(),
       displayName:   selectedFileName ? String(selectedFileName).trim() : String(spreadsheetId).trim(),
       syncMode,
       sheetName:     syncMode === 'single' ? String(sheetName).trim() : '',
       updatedAt:     new Date(),
+      ...(preservedPipelineId ? { pipelineId: preservedPipelineId } : {}),
     };
-    const existingIdx = existingSheets.findIndex(s => s.spreadsheetId === newEntry.spreadsheetId);
     if (existingIdx >= 0) existingSheets[existingIdx] = newEntry;
     else                  existingSheets.push(newEntry);
+
+    // ── Upsert PipelineMapping for syncMode='single' only ──────────────────
+    // syncMode='all' stores the pipeline in config only — no empty-sheetName mapping.
+    if (preservedPipelineId && syncMode === 'single' && newEntry.sheetName) {
+      await PipelineMapping.findOneAndUpdate(
+        { tenantId: tf.tenantId, spreadsheetId: newEntry.spreadsheetId, sheetName: newEntry.sheetName },
+        {
+          $set: {
+            tenantId:      tf.tenantId,
+            spreadsheetId: newEntry.spreadsheetId,
+            sheetName:     newEntry.sheetName,
+            pipelineId:    preservedPipelineId,
+            isActive:      true,
+          },
+        },
+        { upsert: true, new: true }
+      );
+    }
 
     const updated = await Integration.findOneAndUpdate(
       { ...tf, provider: 'google_sheets' },
@@ -1016,6 +1050,11 @@ exports.removeSheetConfig = async (req, res, next) => {
     if (filtered.length === existing.length) {
       return next(err('Spreadsheet not found in configuration', 404));
     }
+
+    // ── PipelineMapping: delete per-spreadsheet mappings for the removed sheet ──
+    // Only removes mappings that have a spreadsheetId set (the new per-sheet tier).
+    // Legacy sheetName-only mappings (spreadsheetId: null) are left intact.
+    await PipelineMapping.deleteMany({ tenantId: tf.tenantId, spreadsheetId: String(spreadsheetId) });
 
     // ── Drive Watch: stop the channel for the sheet being removed ─────────────
     const removedEntry = existing.find(s => s.spreadsheetId === String(spreadsheetId));
@@ -1642,9 +1681,10 @@ exports.syncGoogleSheet = async (req, res, next) => {
           // even if another lead shares the same phone or email.
           // Row identity is guaranteed by externalLeadId (Steps 1 + 1b above).
           const { pipelineId, stageId } = await resolvePipelineGS(tf.tenantId, {
-            adId:       attribution.adId,
-            metaFormId: attribution.metaFormId,
-            sheetName:  tabName,
+            adId:          attribution.adId,
+            metaFormId:    attribution.metaFormId,
+            spreadsheetId: spreadsheetId,   // enables per-spreadsheet-per-tab mapping
+            sheetName:     tabName,
             source,
           });
 
@@ -1835,6 +1875,8 @@ exports.getGoogleSheetsContexts = async (req, res, next) => {
         // true  → leads in DB have this real spreadsheetId stored (indexed sync)
         // false → leads came from the legacy null bucket (synced before spreadsheetId field existed)
         leadsHaveSpreadsheetId: !!(leadMap[sid]),
+        // Saved pipeline for this spreadsheet (set via saveSheetConfig, used as fallback for zero-lead sheets)
+        pipelineId: cfgSS.pipelineId || null,
       });
 
       delete leadMap[sid]; // mark as processed

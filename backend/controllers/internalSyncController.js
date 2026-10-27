@@ -157,13 +157,15 @@ function normaliseSrc(raw) {
   return 'other';
 }
 
-async function resolvePipeline(tenantId, { adId, metaFormId, sheetName, source }) {
+async function resolvePipeline(tenantId, { adId, metaFormId, spreadsheetId, sheetName, source }) {
   try {
     const tiers = [
-      adId       ? { adId }       : null,
-      metaFormId ? { metaFormId } : null,
-      sheetName  ? { sheetName }  : null,
-      source     ? { source }     : null,
+      adId                           ? { adId }                               : null,
+      metaFormId                     ? { metaFormId }                         : null,
+      // Tier 3 (new): per-spreadsheet per-tab — more specific than sheetName alone
+      (spreadsheetId && sheetName)   ? { spreadsheetId, sheetName }           : null,
+      sheetName                      ? { sheetName }                          : null,
+      source                         ? { source }                             : null,
     ].filter(Boolean);
 
     let pipeline = null, stageOverride = null;
@@ -344,9 +346,10 @@ async function syncTab(accessToken, tenantId, spreadsheetId, tabName) {
       // even if another lead shares the same phone or email.
       // Row identity is guaranteed by externalLeadId (Steps 1 + 1b above).
       const { pipelineId, stageId } = await resolvePipeline(tenantId, {
-        adId:       attribution.adId,
-        metaFormId: attribution.metaFormId,
-        sheetName:  tabName,
+        adId:          attribution.adId,
+        metaFormId:    attribution.metaFormId,
+        spreadsheetId: spreadsheetId,   // enables per-spreadsheet-per-tab mapping
+        sheetName:     tabName,
         source,
       });
 

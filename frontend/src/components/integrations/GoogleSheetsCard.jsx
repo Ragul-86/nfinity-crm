@@ -13,7 +13,7 @@
  */
 
 import { useState } from 'react'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   FileSpreadsheet,
   RefreshCw,
@@ -25,6 +25,7 @@ import {
   MoreHorizontal,
   Unplug,
   Clock,
+  GitBranch,
 } from 'lucide-react'
 import toast from 'react-hot-toast'
 import api from '@/services/api'
@@ -82,94 +83,120 @@ function StatusBadge({ status }) {
 }
 
 // ── Individual spreadsheet row ────────────────────────────────────────────────
-function SheetRow({ sheet, isSyncing, isRemoving, readOnly, onSync, onChange, onRemove }) {
+function SheetRow({ sheet, isSyncing, isRemoving, readOnly, pipelines, isSavingPipeline, onSync, onChange, onRemove, onPipelineChange }) {
   const [pendingRemove, setPendingRemove] = useState(false)
   const lastSynced = relativeTime(sheet.updatedAt)
 
   return (
     <div className={cn(
-      'flex items-start gap-2.5 p-2.5 rounded-lg border transition-colors',
+      'flex flex-col gap-2 p-2.5 rounded-lg border transition-colors',
       isRemoving
         ? 'border-destructive/30 bg-destructive/5'
         : 'border-border/60 bg-muted/30 hover:bg-muted/50'
     )}>
-      <FileSpreadsheet className="w-3.5 h-3.5 text-green-600 mt-0.5 shrink-0" />
+      <div className="flex items-start gap-2.5">
+        <FileSpreadsheet className="w-3.5 h-3.5 text-green-600 mt-0.5 shrink-0" />
 
-      {/* Sheet info */}
-      <div className="flex-1 min-w-0">
-        <p className="text-xs font-medium truncate leading-snug">
-          {sheet.displayName || sheet.spreadsheetId}
-        </p>
-        <p className="text-[10px] text-muted-foreground mt-0.5">
-          {sheet.syncMode === 'all' ? 'All Tabs' : `Tab: ${sheet.sheetName}`}
-        </p>
-        {lastSynced && (
-          <p className="text-[10px] text-muted-foreground/60 mt-0.5 flex items-center gap-1">
-            <Clock className="w-2.5 h-2.5 shrink-0" />
-            Synced {lastSynced}
+        {/* Sheet info */}
+        <div className="flex-1 min-w-0">
+          <p className="text-xs font-medium truncate leading-snug">
+            {sheet.displayName || sheet.spreadsheetId}
           </p>
-        )}
-      </div>
+          <p className="text-[10px] text-muted-foreground mt-0.5">
+            {sheet.syncMode === 'all' ? 'All Tabs' : `Tab: ${sheet.sheetName}`}
+          </p>
+          {lastSynced && (
+            <p className="text-[10px] text-muted-foreground/60 mt-0.5 flex items-center gap-1">
+              <Clock className="w-2.5 h-2.5 shrink-0" />
+              Synced {lastSynced}
+            </p>
+          )}
+        </div>
 
-      {/* Per-sheet actions */}
-      {!readOnly && (
-        <div className="flex items-center gap-0.5 shrink-0">
-          {/* Sync */}
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-6 w-6"
-            title="Sync this sheet"
-            disabled={isSyncing || isRemoving}
-            onClick={onSync}
-          >
-            <RefreshCw className={cn('w-3 h-3', isSyncing && 'animate-spin')} />
-          </Button>
-
-          {/* Change (reconfigure) */}
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-6 w-6"
-            title="Reconfigure sync settings"
-            disabled={isSyncing || isRemoving}
-            onClick={onChange}
-          >
-            <Settings2 className="w-3 h-3" />
-          </Button>
-
-          {/* Remove — two-tap confirm */}
-          {pendingRemove ? (
-            <div className="flex items-center gap-0.5 ml-0.5">
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-6 px-1.5 text-[10px] text-muted-foreground"
-                onClick={() => setPendingRemove(false)}
-              >
-                Cancel
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-6 px-1.5 text-[10px] text-destructive hover:text-destructive"
-                disabled={isRemoving}
-                onClick={() => { setPendingRemove(false); onRemove() }}
-              >
-                {isRemoving ? 'Removing…' : 'Remove'}
-              </Button>
-            </div>
-          ) : (
+        {/* Per-sheet actions */}
+        {!readOnly && (
+          <div className="flex items-center gap-0.5 shrink-0">
+            {/* Sync */}
             <Button
               variant="ghost"
               size="icon"
-              className="h-6 w-6 text-muted-foreground hover:text-destructive"
-              title="Remove this sheet"
+              className="h-6 w-6"
+              title="Sync this sheet"
               disabled={isSyncing || isRemoving}
-              onClick={() => setPendingRemove(true)}
+              onClick={onSync}
             >
-              <Trash2 className="w-3 h-3" />
+              <RefreshCw className={cn('w-3 h-3', isSyncing && 'animate-spin')} />
             </Button>
+
+            {/* Change (reconfigure) */}
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-6 w-6"
+              title="Reconfigure sync settings"
+              disabled={isSyncing || isRemoving}
+              onClick={onChange}
+            >
+              <Settings2 className="w-3 h-3" />
+            </Button>
+
+            {/* Remove — two-tap confirm */}
+            {pendingRemove ? (
+              <div className="flex items-center gap-0.5 ml-0.5">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 px-1.5 text-[10px] text-muted-foreground"
+                  onClick={() => setPendingRemove(false)}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 px-1.5 text-[10px] text-destructive hover:text-destructive"
+                  disabled={isRemoving}
+                  onClick={() => { setPendingRemove(false); onRemove() }}
+                >
+                  {isRemoving ? 'Removing…' : 'Remove'}
+                </Button>
+              </div>
+            ) : (
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-6 w-6 text-muted-foreground hover:text-destructive"
+                title="Remove this sheet"
+                disabled={isSyncing || isRemoving}
+                onClick={() => setPendingRemove(true)}
+              >
+                <Trash2 className="w-3 h-3" />
+              </Button>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* ── Pipeline picker ───────────────────────────────────────────────── */}
+      {!readOnly && pipelines && pipelines.length > 0 && (
+        <div className="flex items-center gap-1.5 pl-6">
+          <GitBranch className="w-3 h-3 text-muted-foreground shrink-0" />
+          <select
+            className="flex-1 text-[10px] bg-background border border-border/60 rounded px-1.5 py-0.5 text-foreground focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50"
+            value={sheet.pipelineId || ''}
+            disabled={isSavingPipeline || isRemoving}
+            title="Pipeline for new leads from this spreadsheet"
+            onChange={e => onPipelineChange(e.target.value || null)}
+          >
+            <option value="">— No pipeline override —</option>
+            {pipelines.map(p => (
+              <option key={p._id} value={p._id}>
+                {p.name}{p.isDefault ? ' (default)' : ''}
+              </option>
+            ))}
+          </select>
+          {isSavingPipeline && (
+            <span className="text-[10px] text-muted-foreground shrink-0">Saving…</span>
           )}
         </div>
       )}
@@ -187,9 +214,19 @@ export default function GoogleSheetsCard({
   onDisconnect,
 }) {
   const qc = useQueryClient()
-  const [syncingSheetId,  setSyncingSheetId]  = useState(null)
-  const [removingSheetId, setRemovingSheetId] = useState(null)
-  const [syncingAll,      setSyncingAll]      = useState(false)
+  const [syncingSheetId,   setSyncingSheetId]   = useState(null)
+  const [removingSheetId,  setRemovingSheetId]  = useState(null)
+  const [savingPipelineId, setSavingPipelineId] = useState(null)
+  const [syncingAll,       setSyncingAll]       = useState(false)
+
+  // ── Load pipelines for the picker ─────────────────────────────────────────
+  const { data: pipelinesRaw } = useQuery({
+    queryKey: ['pipelines-list'],
+    queryFn:  () => api.get('/pipeline-defs').then(r => r.data.data || []),
+    staleTime: 5 * 60 * 1000,
+    enabled:  !readOnly,
+  })
+  const pipelines = pipelinesRaw || []
 
   const isConnected = integration?.status === 'connected'
   const isExpired   = integration?.status === 'expired'
@@ -255,6 +292,34 @@ export default function GoogleSheetsCard({
   const handleRemoveOne = (spreadsheetId) => {
     setRemovingSheetId(spreadsheetId)
     removeOneMutation.mutate(spreadsheetId)
+  }
+
+  // ── Per-sheet pipeline assignment ──────────────────────────────────────────
+  const pipelineMutation = useMutation({
+    mutationFn: ({ sheet, pipelineId }) =>
+      api.post('/integrations/google_sheets/config', {
+        spreadsheetId:    sheet.spreadsheetId,
+        sheetName:        sheet.sheetName,
+        selectedFileName: sheet.displayName,
+        syncMode:         sheet.syncMode,
+        // Pass the new pipelineId (or undefined to preserve existing if cleared)
+        ...(pipelineId ? { pipelineId } : { pipelineId: null }),
+      }).then(r => r.data),
+    onSuccess: (_, { sheet }) => {
+      toast.success('Pipeline saved')
+      qc.invalidateQueries(['integrations'])
+      qc.invalidateQueries(['gsheet-contexts'])
+      setSavingPipelineId(null)
+    },
+    onError: (e, { sheet }) => {
+      toast.error(e?.response?.data?.message || 'Failed to save pipeline')
+      setSavingPipelineId(null)
+    },
+  })
+
+  const handlePipelineChange = (sheet, pipelineId) => {
+    setSavingPipelineId(sheet.spreadsheetId)
+    pipelineMutation.mutate({ sheet, pipelineId })
   }
 
   // ── Sync all (sequential) ──────────────────────────────────────────────────
@@ -375,10 +440,13 @@ export default function GoogleSheetsCard({
                 sheet={sheet}
                 isSyncing={syncingSheetId === sheet.spreadsheetId}
                 isRemoving={removingSheetId === sheet.spreadsheetId}
+                isSavingPipeline={savingPipelineId === sheet.spreadsheetId}
                 readOnly={readOnly}
+                pipelines={pipelines}
                 onSync={() => handleSyncOne(sheet.spreadsheetId)}
                 onChange={() => onChangeSheet?.(sheet)}
                 onRemove={() => handleRemoveOne(sheet.spreadsheetId)}
+                onPipelineChange={(pipelineId) => handlePipelineChange(sheet, pipelineId)}
               />
             ))}
           </div>
