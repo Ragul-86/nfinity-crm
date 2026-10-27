@@ -84,7 +84,9 @@ function stageTypeStyle(type) {
 }
 
 // ─── KPI Bar (computed from fetched leads) ────────────────────────────────────
-function KpiBar({ leads, pipelineName }) {
+// hideKpis: optional array of label strings to exclude (e.g. ['Open Value', 'Won Revenue']).
+// Defaults to [] so all callers that don't pass it continue to show all 6 cards.
+function KpiBar({ leads, pipelineName, hideKpis = [] }) {
   const all = leads || []
   const won  = all.filter(l => l.stageType === 'won')
   const lost = all.filter(l => l.stageType === 'lost')
@@ -95,7 +97,7 @@ function KpiBar({ leads, pipelineName }) {
     ? Math.round(won.length / (won.length + lost.length) * 100)
     : 0
 
-  const kpis = [
+  const allKpis = [
     { label: 'Total Leads',     value: all.length,         color: 'text-blue-400',    icon: Users },
     { label: 'Open Value',      value: fmt(openValue),     color: 'text-emerald-400', icon: IndianRupee },
     { label: 'Won Leads',       value: won.length,         color: 'text-green-400',   icon: CheckCheck },
@@ -103,8 +105,14 @@ function KpiBar({ leads, pipelineName }) {
     { label: 'Lost Leads',      value: lost.length,        color: 'text-red-400',     icon: TrendingDown },
     { label: 'Conversion Rate', value: `${convRate}%`,     color: 'text-purple-400',  icon: BarChart2 },
   ]
+  const kpis = hideKpis.length ? allKpis.filter(k => !hideKpis.includes(k.label)) : allKpis
+
+  // Responsive grid column counts keyed by visible card count
+  const lgColsClass = { 6: 'lg:grid-cols-6', 5: 'lg:grid-cols-5', 4: 'lg:grid-cols-4', 3: 'lg:grid-cols-3', 2: 'lg:grid-cols-2' }[kpis.length] || 'lg:grid-cols-6'
+  const smColsClass = kpis.length <= 4 ? 'sm:grid-cols-2' : 'sm:grid-cols-3'
+
   return (
-    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 mb-4">
+    <div className={`grid grid-cols-2 ${smColsClass} ${lgColsClass} gap-2 mb-4`}>
       {kpis.map(k => (
         <div key={k.label} className="bg-card border border-border rounded-lg px-3 py-2.5 flex items-center gap-2">
           <k.icon className={`w-4 h-4 shrink-0 ${k.color}`} />
@@ -496,7 +504,7 @@ function BulkBar({ selectedIds, onClear, onBulkArchive, onBulkDelete, onBulkStag
 //     When provided and changes, overrides the stored pipeline selection.
 //     Used by GSheetLeadsDashboard to auto-select the tab's pipeline.
 // ─────────────────────────────────────────────────────────────────────────────
-export default function SalesPipeline({ sourceFilter = null, initialPipelineId = null } = {}) {
+export default function SalesPipeline({ sourceFilter = null, initialPipelineId = null, hideKpis = [] } = {}) {
   const queryClient = useQueryClient()
 
   // ── UI state ────────────────────────────────────────────────────────────────
@@ -906,7 +914,7 @@ export default function SalesPipeline({ sourceFilter = null, initialPipelineId =
         </div>
 
       {/* ── KPI Bar ────────────────────────────────────────────────────────── */}
-      {activePipeline && <KpiBar leads={leadsData} pipelineName={activePipeline.name} />}
+      {activePipeline && <KpiBar leads={leadsData} pipelineName={activePipeline.name} hideKpis={hideKpis} />}
 
       {/* ── No pipeline state ───────────────────────────────────────────────── */}
       {!loadingPipelines && pipelines.length === 0 && (

@@ -295,6 +295,7 @@ export default function GSheetKanbanDashboard() {
       <SalesPipeline
         sourceFilter={sourceFilter}
         initialPipelineId={autoPipelineId}
+        hideKpis={['Open Value', 'Won Revenue']}
       />
 
     </div>
