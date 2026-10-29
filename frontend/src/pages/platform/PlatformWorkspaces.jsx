@@ -1174,7 +1174,15 @@ export default function PlatformWorkspaces() {
               <MoreVertical className="w-4 h-4" />
             </Button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-56">
+          <DropdownMenuContent
+            align="end"
+            collisionPadding={8}
+            className="w-56"
+            style={{
+              maxHeight: 'var(--radix-dropdown-menu-content-available-height)',
+              overflowY: 'auto',
+            }}
+          >
             <DropdownMenuLabel className="text-xs">Workspace Actions</DropdownMenuLabel>
             <DropdownMenuSeparator />
 
