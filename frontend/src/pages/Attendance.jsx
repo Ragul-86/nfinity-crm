@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, Component } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Clock, LogIn, LogOut, Coffee, Users, UserCheck, UserX, AlarmClock,
@@ -49,7 +49,32 @@ async function downloadBlob(url, params, filename) {
   URL.revokeObjectURL(blobUrl)
 }
 
-export default function Attendance() {
+class AttendanceErrorBoundary extends Component {
+  state = { hasError: false }
+  static getDerivedStateFromError() { return { hasError: true } }
+  componentDidCatch(error, info) { console.error('[Attendance] Render error:', error, info) }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="p-10 text-center space-y-3">
+          <p className="text-lg font-medium">Failed to load Attendance</p>
+          <p className="text-sm text-muted-foreground">
+            An error occurred while displaying this page.
+          </p>
+          <button
+            onClick={() => this.setState({ hasError: false })}
+            className="text-sm text-primary hover:underline"
+          >
+            Try again
+          </button>
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
+
+function AttendanceContent() {
   const { user } = useAuth()
   const queryClient = useQueryClient()
   const isAdmin = ADMIN_ROLES.includes(user?.role)
@@ -308,7 +333,7 @@ export default function Attendance() {
               <Card>
                 <CardHeader className="pb-3"><CardTitle className="text-base">Department-wise Attendance</CardTitle></CardHeader>
                 <CardContent>
-                  {deptLoading ? <Skeleton className="h-56" /> : (deptWise || []).length === 0 ? (
+                  {deptLoading ? <Skeleton className="h-56" /> : !Array.isArray(deptWise) || deptWise.length === 0 ? (
                     <p className="text-sm text-muted-foreground text-center py-8">No data</p>
                   ) : (
                     <div className="space-y-4">
@@ -445,9 +470,9 @@ export default function Attendance() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-border">
-                      {myAttendance?.length === 0 ? (
+                      {!Array.isArray(myAttendance) || myAttendance.length === 0 ? (
                         <tr><td colSpan={6} className="py-8 text-center text-muted-foreground">No attendance records</td></tr>
-                      ) : myAttendance?.map((record) => (
+                      ) : myAttendance.map((record) => (
                         <tr key={record._id} className="hover:bg-muted/30">
                           <td className="py-2">{format(new Date(record.date), 'EEE, MMM d')}</td>
                           <td className="py-2">{fmtTime(record.clockIn)}</td>
@@ -494,9 +519,9 @@ export default function Attendance() {
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-border">
-                        {teamAttendance?.length === 0 ? (
+                        {!Array.isArray(teamAttendance) || teamAttendance.length === 0 ? (
                           <tr><td colSpan={7} className="py-8 text-center text-muted-foreground">No records for this date</td></tr>
-                        ) : teamAttendance?.map((record) => (
+                        ) : teamAttendance.map((record) => (
                           <tr key={record._id} className="hover:bg-muted/30">
                             <td className="py-2 flex items-center gap-2">
                               <div className="w-6 h-6 rounded-full bg-primary/10 flex items-center justify-center text-xs text-primary font-medium">
@@ -568,9 +593,9 @@ export default function Attendance() {
                   <table className="w-full text-sm">
                     <thead><tr className="border-b border-border">{['Type', 'From', 'To', 'Days', 'Reason', 'Status', ''].map(h => <th key={h} className="text-left pb-2 font-medium text-muted-foreground">{h}</th>)}</tr></thead>
                     <tbody className="divide-y divide-border">
-                      {myLeaves?.length === 0 ? (
+                      {!Array.isArray(myLeaves) || myLeaves.length === 0 ? (
                         <tr><td colSpan={7} className="py-8 text-center text-muted-foreground">No leave requests yet</td></tr>
-                      ) : myLeaves?.map((lv) => (
+                      ) : myLeaves.map((lv) => (
                         <tr key={lv._id} className="hover:bg-muted/30">
                           <td className="py-2">{LEAVE_TYPE_LABELS[lv.leaveType]}</td>
                           <td className="py-2">{fmtDate(lv.startDate)}</td>
@@ -601,9 +626,9 @@ export default function Attendance() {
                     <table className="w-full text-sm">
                       <thead><tr className="border-b border-border">{['Employee', 'Type', 'From', 'To', 'Days', 'Status', 'Actions'].map(h => <th key={h} className="text-left pb-2 font-medium text-muted-foreground">{h}</th>)}</tr></thead>
                       <tbody className="divide-y divide-border">
-                        {allLeaves?.length === 0 ? (
+                        {!Array.isArray(allLeaves) || allLeaves.length === 0 ? (
                           <tr><td colSpan={7} className="py-8 text-center text-muted-foreground">No leave requests</td></tr>
-                        ) : allLeaves?.map((lv) => (
+                        ) : allLeaves.map((lv) => (
                           <tr key={lv._id} className="hover:bg-muted/30">
                             <td className="py-2">{lv.employee?.name}</td>
                             <td className="py-2">{LEAVE_TYPE_LABELS[lv.leaveType]}</td>
@@ -694,7 +719,7 @@ export default function Attendance() {
                     <table className="w-full text-sm">
                       <thead><tr className="border-b border-border sticky top-0 bg-card">{['Employee', 'ID', 'Department', 'Date', 'In', 'Out', 'Hours', 'OT', 'Status', 'Remarks'].map(h => <th key={h} className="text-left pb-2 font-medium text-muted-foreground whitespace-nowrap pr-3">{h}</th>)}</tr></thead>
                       <tbody className="divide-y divide-border">
-                        {(!reportRows || reportRows.length === 0) ? (
+                        {(!Array.isArray(reportRows) || reportRows.length === 0) ? (
                           <tr><td colSpan={10} className="py-8 text-center text-muted-foreground">No records found</td></tr>
                         ) : reportRows.map((row, i) => (
                           <tr key={i} className="hover:bg-muted/30">
@@ -843,5 +868,13 @@ export default function Attendance() {
         </DialogContent>
       </Dialog>
     </div>
+  )
+}
+
+export default function Attendance() {
+  return (
+    <AttendanceErrorBoundary>
+      <AttendanceContent />
+    </AttendanceErrorBoundary>
   )
 }
