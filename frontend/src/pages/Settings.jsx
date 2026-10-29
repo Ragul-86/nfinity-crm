@@ -173,7 +173,7 @@ export default function Settings() {
           <Card>
             <CardHeader>
               <CardTitle>Appearance</CardTitle>
-              <CardDescription>Customize how Ascendia CRM looks</CardDescription>
+              <CardDescription>Customize how NFINITY CRM looks</CardDescription>
             </CardHeader>
             <CardContent>
               <div className="max-w-md space-y-5">
@@ -221,7 +221,7 @@ export default function Settings() {
             <CardContent>
               <div className="space-y-4 max-w-lg">
                 {[
-                  { id: 'companyName', label: 'Company Name', placeholder: 'Ascendia Marketing' },
+                  { id: 'companyName', label: 'Company Name', placeholder: 'Your Company Name' },
                   { id: 'website', label: 'Website', placeholder: 'https://company.com' },
                   { id: 'email', label: 'Contact Email', placeholder: 'contact@company.com' },
                   { id: 'phone', label: 'Phone', placeholder: '+1 234 567 8900' },

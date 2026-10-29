@@ -190,7 +190,7 @@ export default function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose
                 <div className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center shrink-0">
                   <Zap className="w-4 h-4 text-primary-foreground" />
                 </div>
-                <span className="font-bold text-lg tracking-tight whitespace-nowrap">TEAM UPDATE</span>
+                <span className="font-bold text-lg tracking-tight whitespace-nowrap">NFINITY CRM</span>
               </div>
               <button
                 onClick={onMobileClose}
@@ -229,7 +229,7 @@ export default function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose
                 transition={{ duration: 0.2 }}
                 className="font-bold text-lg tracking-tight whitespace-nowrap"
               >
-                TEAM UPDATE
+                NFINITY CRM
               </motion.span>
             )}
           </AnimatePresence>

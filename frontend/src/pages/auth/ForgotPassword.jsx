@@ -33,7 +33,7 @@ export default function ForgotPassword() {
       <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="w-full max-w-md">
         <div className="flex items-center gap-3 justify-center mb-8">
           <div className="w-10 h-10 rounded-xl bg-primary flex items-center justify-center"><Zap className="w-5 h-5 text-primary-foreground" /></div>
-          <span className="text-2xl font-bold">Ascendia CRM</span>
+          <span className="text-2xl font-bold">NFINITY CRM</span>
         </div>
         <Card className="shadow-xl border-border/50">
           <CardHeader className="pb-4">

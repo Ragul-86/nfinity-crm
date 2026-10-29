@@ -51,7 +51,7 @@ export default function Login() {
           <div className="w-10 h-10 rounded-xl bg-primary flex items-center justify-center shadow-lg shadow-primary/25">
             <Zap className="w-5 h-5 text-primary-foreground" />
           </div>
-          <span className="text-2xl font-bold">Ascendia CRM</span>
+          <span className="text-2xl font-bold">NFINITY CRM</span>
         </div>
 
         <Card className="shadow-xl border-border/50">
