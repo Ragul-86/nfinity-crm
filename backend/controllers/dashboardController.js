@@ -57,15 +57,20 @@ exports.getDashboardStats = async (req, res, next) => {
     ]);
 
     // Recent activities (tasks + leads + clients combined)
+    // Using lean() + field projections: these are read-only, display-only queries.
     const [recentLeads, recentClients, recentTasks] = await Promise.all([
-      Lead.find(tf).sort('-createdAt').limit(5).populate('createdBy', 'name avatar'),
-      Client.find(tf).sort('-createdAt').limit(5).populate('createdBy', 'name avatar'),
-      Task.find(tf).sort('-createdAt').limit(5).populate('createdBy assignedTo', 'name avatar'),
+      Lead.find(tf, { name: 1, email: 1, phone: 1, status: 1, source: 1, value: 1, priority: 1, createdAt: 1, createdBy: 1 })
+        .sort('-createdAt').limit(5).lean().populate('createdBy', 'name avatar'),
+      Client.find(tf, { companyName: 1, contactPerson: 1, email: 1, status: 1, createdAt: 1, createdBy: 1 })
+        .sort('-createdAt').limit(5).lean().populate('createdBy', 'name avatar'),
+      Task.find(tf, { title: 1, status: 1, priority: 1, dueDate: 1, createdAt: 1, createdBy: 1, assignedTo: 1 })
+        .sort('-createdAt').limit(5).lean().populate('createdBy assignedTo', 'name avatar'),
     ]);
 
     // Upcoming tasks
-    const upcomingTasks = await Task.find({ status: { $ne: 'completed' }, dueDate: { $gte: now }, ...tf })
-      .sort('dueDate').limit(10).populate('assignedTo', 'name avatar');
+    const upcomingTasks = await Task.find({ status: { $ne: 'completed' }, dueDate: { $gte: now }, ...tf }, {
+      title: 1, status: 1, priority: 1, dueDate: 1, assignedTo: 1,
+    }).sort('dueDate').limit(10).lean().populate('assignedTo', 'name avatar');
 
     // Attendance rate this month
     const totalAttendance = await Attendance.countDocuments({ date: { $gte: firstOfMonth }, status: 'present', ...tf });
@@ -114,8 +119,9 @@ exports.getEmployeeDashboard = async (req, res, next) => {
       Task.countDocuments({ assignedTo: userId, status: { $ne: 'completed' }, dueDate: { $lt: now }, ...tf }),
       SOPAssignment.countDocuments({ assignedTo: userId, status: { $nin: ['completed', 'archived'] }, ...tf }),
       SOPAssignment.countDocuments({ assignedTo: userId, status: 'awaiting_review', ...tf }),
-      Task.find({ assignedTo: userId, status: { $ne: 'completed' }, dueDate: { $gte: now, $lte: in7Days }, ...tf })
-        .sort('dueDate').limit(5).populate('campaign', 'name').populate('project', 'name'),
+      Task.find({ assignedTo: userId, status: { $ne: 'completed' }, dueDate: { $gte: now, $lte: in7Days }, ...tf },
+        { title: 1, status: 1, priority: 1, dueDate: 1, campaign: 1, project: 1 })
+        .sort('dueDate').limit(5).lean().populate('campaign', 'name').populate('project', 'name'),
       Notification.countDocuments({ recipient: userId, isRead: false }),
       Attendance.countDocuments({ employee: userId, status: 'present', date: { $gte: firstOfMonth } }),
       Attendance.countDocuments({ employee: userId, status: 'leave', date: { $gte: firstOfMonth } }),
@@ -124,7 +130,9 @@ exports.getEmployeeDashboard = async (req, res, next) => {
     const workingDaysSoFar = Math.max(1, Math.ceil((now - firstOfMonth) / (1000 * 60 * 60 * 24)));
     const attendanceRate = parseFloat(((presentDaysThisMonth / workingDaysSoFar) * 100).toFixed(1));
 
-    const recentNotifications = await Notification.find({ recipient: userId }).sort('-createdAt').limit(5);
+    const recentNotifications = await Notification.find({ recipient: userId },
+      { title: 1, message: 1, type: 1, category: 1, severity: 1, isRead: 1, actionUrl: 1, createdAt: 1 }
+    ).sort('-createdAt').limit(5).lean();
 
     res.status(200).json({
       success: true,

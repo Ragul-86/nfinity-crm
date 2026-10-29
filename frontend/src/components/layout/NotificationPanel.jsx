@@ -107,7 +107,8 @@ export default function NotificationPanel() {
   const { data } = useQuery({
     queryKey: ['notifications-panel', params],
     queryFn: () => api.get('/notifications', { params }).then(r => r.data),
-    refetchInterval: 30_000,
+    refetchInterval: 60_000,
+    refetchIntervalInBackground: false,
   })
 
   const notifications = data?.notifications || data?.data || []

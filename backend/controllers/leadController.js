@@ -251,32 +251,37 @@ exports.getLeadStats = async (req, res, next) => {
 
     const matchFilter = { ...tf, ...streamFilter };
 
-    const [byStatus, bySource, byPriority, totalValue] = await Promise.all([
-      Lead.aggregate([
-        { $match: matchFilter },
-        { $group: { _id: '$status', count: { $sum: 1 }, value: { $sum: '$value' } } },
-      ]),
-      Lead.aggregate([
-        { $match: matchFilter },
-        { $group: { _id: '$source', count: { $sum: 1 } } },
-      ]),
-      Lead.aggregate([
-        { $match: matchFilter },
-        { $group: { _id: '$priority', count: { $sum: 1 } } },
-      ]),
-      Lead.aggregate([
-        { $match: matchFilter },
-        { $group: { _id: null, total: { $sum: '$value' }, count: { $sum: 1 } } },
-      ]),
+    // Single aggregation with $facet — one collection scan instead of four.
+    // Output shape is identical to the previous Promise.all([...]) version.
+    const [facetResult] = await Lead.aggregate([
+      { $match: matchFilter },
+      {
+        $facet: {
+          byStatus: [
+            { $group: { _id: '$status', count: { $sum: 1 }, value: { $sum: '$value' } } },
+          ],
+          bySource: [
+            { $group: { _id: '$source', count: { $sum: 1 } } },
+          ],
+          byPriority: [
+            { $group: { _id: '$priority', count: { $sum: 1 } } },
+          ],
+          totalValue: [
+            { $group: { _id: null, total: { $sum: '$value' }, count: { $sum: 1 } } },
+          ],
+        },
+      },
     ]);
+
+    const { byStatus, bySource, byPriority, totalValue } = facetResult || {};
 
     res.json({
       success: true,
       data: {
-        byStatus,
-        bySource,
-        byPriority,
-        totals: totalValue[0] || { total: 0, count: 0 },
+        byStatus:   byStatus   || [],
+        bySource:   bySource   || [],
+        byPriority: byPriority || [],
+        totals: (totalValue || [])[0] || { total: 0, count: 0 },
       },
     });
   } catch (e) { next(e); }

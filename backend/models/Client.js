@@ -54,4 +54,8 @@ const clientSchema = new mongoose.Schema({
   leadId:          { type: mongoose.Schema.Types.ObjectId, ref: 'Lead' },  // original lead
 }, { timestamps: true })
 
+// ── Compound indexes for common list/sort/filter queries ──────────────────────
+clientSchema.index({ tenantId: 1, status: 1 })
+clientSchema.index({ tenantId: 1, createdAt: -1 })
+
 module.exports = mongoose.model('Client', clientSchema)

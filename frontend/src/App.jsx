@@ -1,3 +1,4 @@
+import { lazy, Suspense } from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { AuthProvider } from '@/contexts/AuthContext'
 import { ThemeProvider } from '@/contexts/ThemeContext'
@@ -8,89 +9,95 @@ import DashboardLayout from '@/layouts/DashboardLayout'
 import PlatformLayout from '@/layouts/PlatformLayout'
 import ClientPortalLayout from '@/layouts/ClientPortalLayout'
 
-// Auth pages
+// ── Auth pages (eager — first pages visitors see) ────────────────────────────
 import Login from '@/pages/auth/Login'
 import Register from '@/pages/auth/Register'
 import ForgotPassword from '@/pages/auth/ForgotPassword'
 
-// Dashboard & module pages
-import Dashboard from '@/pages/Dashboard'
-import SalesPipeline from '@/pages/SalesPipeline'
-import MetaLeads from '@/pages/MetaLeads'
-import Clients from '@/pages/Clients'
-import CustomerWorkspace from '@/pages/CustomerWorkspace'
-import Campaigns from '@/pages/Campaigns'
-import MyCampaigns from '@/pages/MyCampaigns'
-import SOP from '@/pages/SOP'
-import Projects from '@/pages/Projects'
-import Tasks from '@/pages/Tasks'
-import Employees from '@/pages/Employees'
-import Attendance from '@/pages/Attendance'
-import Reports from '@/pages/Reports'
-import Notifications from '@/pages/Notifications'
-import Settings from '@/pages/Settings'
-import Integrations from '@/pages/Integrations'
-import Leads from '@/pages/Leads'
-import LeadSources from '@/pages/LeadSources'
-import LeadStreamDashboard from '@/pages/LeadStreamDashboard'
-import GSheetLeadsDashboard from '@/pages/GSheetLeadsDashboard'
-import GSheetKanbanDashboard from '@/pages/GSheetKanbanDashboard'
-import GSheetLeadsTable from '@/pages/GSheetLeadsTable'
-import LeadForms from '@/pages/LeadForms'
-import FinanceWorkspace from '@/pages/FinanceWorkspace'
-import OperationsWorkspace from '@/pages/OperationsWorkspace'
-import AuditLogs from '@/pages/AuditLogs'
-import SystemHealth from '@/pages/SystemHealth'
-
-// Platform Super Admin pages
-import PlatformDashboard       from '@/pages/platform/PlatformDashboard'
-import PlatformWorkspaces      from '@/pages/platform/PlatformWorkspaces'
-import PlatformClients         from '@/pages/platform/PlatformClients'
-import PlatformSubscriptions   from '@/pages/platform/PlatformSubscriptions'
-import PlatformBilling         from '@/pages/platform/PlatformBilling'
-import PlatformGlobalUsers     from '@/pages/platform/PlatformGlobalUsers'
-import PlatformGlobalRoles     from '@/pages/platform/PlatformGlobalRoles'
-import PlatformPermissions     from '@/pages/platform/PlatformPermissions'
-import PlatformFeatures        from '@/pages/platform/PlatformFeatures'
-import PlatformSOPTemplates    from '@/pages/platform/PlatformSOPTemplates'
-import PlatformLeadForms       from '@/pages/platform/PlatformLeadForms'
-import PlatformPipelines       from '@/pages/platform/PlatformPipelines'
-import PlatformAnalytics       from '@/pages/platform/PlatformAnalytics'
-import PlatformReports         from '@/pages/platform/PlatformReports'
-import PlatformAuditLogs       from '@/pages/platform/PlatformAuditLogs'
-import PlatformActivityLogs    from '@/pages/platform/PlatformActivityLogs'
-import PlatformNotifications   from '@/pages/platform/PlatformNotifications'
-import PlatformSupport         from '@/pages/platform/PlatformSupport'
-import PlatformStorage         from '@/pages/platform/PlatformStorage'
-import PlatformAPIManagement   from '@/pages/platform/PlatformAPIManagement'
-import PlatformWebhooks        from '@/pages/platform/PlatformWebhooks'
-import PlatformEmail           from '@/pages/platform/PlatformEmail'
-import PlatformWhatsApp        from '@/pages/platform/PlatformWhatsApp'
-import PlatformAISettings      from '@/pages/platform/PlatformAISettings'
-import PlatformSecurity        from '@/pages/platform/PlatformSecurity'
-import PlatformBackup          from '@/pages/platform/PlatformBackup'
-import PlatformSystemSettings  from '@/pages/platform/PlatformSystemSettings'
-import PlatformLicense         from '@/pages/platform/PlatformLicense'
-
-// Misc pages
+// ── Error / misc pages (eager — may be rendered before JS chunks load) ───────
+import NotFound from '@/pages/error/NotFound'
+import Maintenance from '@/pages/error/Maintenance'
 import AcceptInvitation from '@/pages/AcceptInvitation'
 import AccessDenied from '@/pages/AccessDenied'
 import OAuthCallback from '@/pages/OAuthCallback'
 
-// Error pages
-import NotFound from '@/pages/error/NotFound'
-import Maintenance from '@/pages/error/Maintenance'
+// ── Tenant workspace pages (lazy — loaded on demand per route) ────────────────
+const Dashboard           = lazy(() => import('@/pages/Dashboard'))
+const SalesPipeline       = lazy(() => import('@/pages/SalesPipeline'))
+const MetaLeads           = lazy(() => import('@/pages/MetaLeads'))
+const Clients             = lazy(() => import('@/pages/Clients'))
+const CustomerWorkspace   = lazy(() => import('@/pages/CustomerWorkspace'))
+const Campaigns           = lazy(() => import('@/pages/Campaigns'))
+const MyCampaigns         = lazy(() => import('@/pages/MyCampaigns'))
+const SOP                 = lazy(() => import('@/pages/SOP'))
+const Projects            = lazy(() => import('@/pages/Projects'))
+const Tasks               = lazy(() => import('@/pages/Tasks'))
+const Employees           = lazy(() => import('@/pages/Employees'))
+const Attendance          = lazy(() => import('@/pages/Attendance'))
+const Reports             = lazy(() => import('@/pages/Reports'))
+const Notifications       = lazy(() => import('@/pages/Notifications'))
+const Settings            = lazy(() => import('@/pages/Settings'))
+const Integrations        = lazy(() => import('@/pages/Integrations'))
+const Leads               = lazy(() => import('@/pages/Leads'))
+const LeadSources         = lazy(() => import('@/pages/LeadSources'))
+const LeadStreamDashboard = lazy(() => import('@/pages/LeadStreamDashboard'))
+const GSheetKanbanDashboard = lazy(() => import('@/pages/GSheetKanbanDashboard'))
+const GSheetLeadsTable    = lazy(() => import('@/pages/GSheetLeadsTable'))
+const LeadForms           = lazy(() => import('@/pages/LeadForms'))
+const FinanceWorkspace    = lazy(() => import('@/pages/FinanceWorkspace'))
+const OperationsWorkspace = lazy(() => import('@/pages/OperationsWorkspace'))
+const AuditLogs           = lazy(() => import('@/pages/AuditLogs'))
+const SystemHealth        = lazy(() => import('@/pages/SystemHealth'))
 
-// Client Portal pages
-import PortalLogin from '@/pages/portal/PortalLogin'
-import PortalDashboard from '@/pages/portal/PortalDashboard'
-import PortalInvoices from '@/pages/portal/PortalInvoices'
-import PortalQuotations from '@/pages/portal/PortalQuotations'
-import PortalTasks from '@/pages/portal/PortalTasks'
-import PortalSOP from '@/pages/portal/PortalSOP'
-import PortalMeetings from '@/pages/portal/PortalMeetings'
-import PortalSupport from '@/pages/portal/PortalSupport'
-import PortalProfile from '@/pages/portal/PortalProfile'
+// ── Platform Super Admin pages (lazy — separate user type) ───────────────────
+const PlatformDashboard      = lazy(() => import('@/pages/platform/PlatformDashboard'))
+const PlatformWorkspaces     = lazy(() => import('@/pages/platform/PlatformWorkspaces'))
+const PlatformClients        = lazy(() => import('@/pages/platform/PlatformClients'))
+const PlatformSubscriptions  = lazy(() => import('@/pages/platform/PlatformSubscriptions'))
+const PlatformBilling        = lazy(() => import('@/pages/platform/PlatformBilling'))
+const PlatformGlobalUsers    = lazy(() => import('@/pages/platform/PlatformGlobalUsers'))
+const PlatformGlobalRoles    = lazy(() => import('@/pages/platform/PlatformGlobalRoles'))
+const PlatformPermissions    = lazy(() => import('@/pages/platform/PlatformPermissions'))
+const PlatformFeatures       = lazy(() => import('@/pages/platform/PlatformFeatures'))
+const PlatformSOPTemplates   = lazy(() => import('@/pages/platform/PlatformSOPTemplates'))
+const PlatformLeadForms      = lazy(() => import('@/pages/platform/PlatformLeadForms'))
+const PlatformPipelines      = lazy(() => import('@/pages/platform/PlatformPipelines'))
+const PlatformAnalytics      = lazy(() => import('@/pages/platform/PlatformAnalytics'))
+const PlatformReports        = lazy(() => import('@/pages/platform/PlatformReports'))
+const PlatformAuditLogs      = lazy(() => import('@/pages/platform/PlatformAuditLogs'))
+const PlatformActivityLogs   = lazy(() => import('@/pages/platform/PlatformActivityLogs'))
+const PlatformNotifications  = lazy(() => import('@/pages/platform/PlatformNotifications'))
+const PlatformSupport        = lazy(() => import('@/pages/platform/PlatformSupport'))
+const PlatformStorage        = lazy(() => import('@/pages/platform/PlatformStorage'))
+const PlatformAPIManagement  = lazy(() => import('@/pages/platform/PlatformAPIManagement'))
+const PlatformWebhooks       = lazy(() => import('@/pages/platform/PlatformWebhooks'))
+const PlatformEmail          = lazy(() => import('@/pages/platform/PlatformEmail'))
+const PlatformWhatsApp       = lazy(() => import('@/pages/platform/PlatformWhatsApp'))
+const PlatformAISettings     = lazy(() => import('@/pages/platform/PlatformAISettings'))
+const PlatformSecurity       = lazy(() => import('@/pages/platform/PlatformSecurity'))
+const PlatformBackup         = lazy(() => import('@/pages/platform/PlatformBackup'))
+const PlatformSystemSettings = lazy(() => import('@/pages/platform/PlatformSystemSettings'))
+const PlatformLicense        = lazy(() => import('@/pages/platform/PlatformLicense'))
+
+// ── Client Portal pages (lazy — separate audience) ───────────────────────────
+const PortalLogin      = lazy(() => import('@/pages/portal/PortalLogin'))
+const PortalDashboard  = lazy(() => import('@/pages/portal/PortalDashboard'))
+const PortalInvoices   = lazy(() => import('@/pages/portal/PortalInvoices'))
+const PortalQuotations = lazy(() => import('@/pages/portal/PortalQuotations'))
+const PortalTasks      = lazy(() => import('@/pages/portal/PortalTasks'))
+const PortalSOP        = lazy(() => import('@/pages/portal/PortalSOP'))
+const PortalMeetings   = lazy(() => import('@/pages/portal/PortalMeetings'))
+const PortalSupport    = lazy(() => import('@/pages/portal/PortalSupport'))
+const PortalProfile    = lazy(() => import('@/pages/portal/PortalProfile'))
+
+// ── Route loading fallback ────────────────────────────────────────────────────
+function RouteLoader() {
+  return (
+    <div className="flex items-center justify-center h-screen w-full bg-background">
+      <div className="w-8 h-8 rounded-full border-2 border-primary border-t-transparent animate-spin" />
+    </div>
+  )
+}
 
 function App() {
   return (
@@ -98,6 +105,7 @@ function App() {
       <ThemeProvider>
         <AuthProvider>
           <PortalProvider>
+            <Suspense fallback={<RouteLoader />}>
             <Routes>
               {/* ── Public CRM routes ── */}
               <Route path="/login" element={<Login />} />
@@ -195,6 +203,7 @@ function App() {
               {/* 404 fallback */}
               <Route path="*" element={<NotFound />} />
             </Routes>
+            </Suspense>
           </PortalProvider>
         </AuthProvider>
       </ThemeProvider>

@@ -598,7 +598,7 @@ export default function SalesPipeline({ sourceFilter = null, initialPipelineId =
       return api.get('/leads', { params }).then(r => r.data.data || [])
     },
     enabled: !!selectedPipelineId,
-    refetchInterval: 30_000,
+    refetchInterval: 60_000,      // poll every 60 s (was 30 s) — halves background traffic
     refetchOnWindowFocus: true,
   })
   const isLoading = loadingPipelines || loadingLeads
@@ -623,6 +623,7 @@ export default function SalesPipeline({ sourceFilter = null, initialPipelineId =
   const { data: employees } = useQuery({
     queryKey: ['employees-list'],
     queryFn: () => api.get('/users', { params: { limit: 100 } }).then(r => r.data.data),
+    staleTime: 5 * 60 * 1000,   // employee list changes rarely — reuse for 5 min
   })
 
   // ── Invalidate helpers ──────────────────────────────────────────────────────

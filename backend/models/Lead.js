@@ -107,6 +107,11 @@ leadSchema.index({ tenantId: 1, campaignId: 1 }, { sparse: true })
 leadSchema.index({ tenantId: 1, pipelineId: 1 }, { sparse: true })
 leadSchema.index({ tenantId: 1, pipelineId: 1, stageId: 1 }, { sparse: true })
 leadSchema.index({ tenantId: 1, spreadsheetId: 1 }, { sparse: true })
+// ── GSheet dashboard filters: externalSource + tab/spreadsheet combinations ──
+// These compound indexes cover the common query patterns issued by the GSheet
+// Kanban and leads-table dashboards which always filter by externalSource first.
+leadSchema.index({ tenantId: 1, externalSource: 1, spreadsheetId: 1, sheetName: 1 })
+leadSchema.index({ tenantId: 1, externalSource: 1, sheetName: 1 })
 
 // Auto-generate leadId before save
 leadSchema.pre('save', async function (next) {
