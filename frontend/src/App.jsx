@@ -21,6 +21,10 @@ import AcceptInvitation from '@/pages/AcceptInvitation'
 import AccessDenied from '@/pages/AccessDenied'
 import OAuthCallback from '@/pages/OAuthCallback'
 
+// ── Legal pages (lazy — publicly accessible, no auth required) ───────────────
+const PrivacyPolicy = lazy(() => import('@/pages/legal/PrivacyPolicy'))
+const Terms         = lazy(() => import('@/pages/legal/Terms'))
+
 // ── Tenant workspace pages (lazy — loaded on demand per route) ────────────────
 const Dashboard           = lazy(() => import('@/pages/Dashboard'))
 const SalesPipeline       = lazy(() => import('@/pages/SalesPipeline'))
@@ -114,6 +118,10 @@ function App() {
               <Route path="/accept-invitation/:token" element={<AcceptInvitation />} />
               <Route path="/unauthorized" element={<AccessDenied />} />
               <Route path="/oauth-callback" element={<OAuthCallback />} />
+
+              {/* ── Legal pages (public) ── */}
+              <Route path="/privacy-policy" element={<PrivacyPolicy />} />
+              <Route path="/terms" element={<Terms />} />
 
               {/* ── Error pages ── */}
               <Route path="/404" element={<NotFound />} />

@@ -114,6 +114,12 @@ export default function Login() {
 
           </CardContent>
         </Card>
+
+        <p className="text-center text-xs text-muted-foreground/60 mt-6 space-x-3">
+          <Link to="/privacy-policy" className="hover:text-muted-foreground transition-colors">Privacy Policy</Link>
+          <span>·</span>
+          <Link to="/terms" className="hover:text-muted-foreground transition-colors">Terms of Service</Link>
+        </p>
       </motion.div>
     </div>
   )
