@@ -29,21 +29,27 @@ export default defineConfig({
             if (id.includes('date-fns')) {
               return 'vendor-date'
             }
-            // React core + router + query — always needed, cache together
+            // React core + router + query — always needed, cache together.
+            // NOTE: scheduler, use-sync-external-store and other React internals
+            // must live in the same chunk so they share the same React instance.
             if (
               id.includes('/react/') ||
               id.includes('/react-dom/') ||
               id.includes('react-router') ||
-              id.includes('@tanstack/react-query')
+              id.includes('@tanstack/react-query') ||
+              id.includes('scheduler') ||
+              id.includes('use-sync-external-store')
             ) {
               return 'vendor-react'
             }
-            // UI primitives (Radix + lucide)
+            // UI primitives (Radix + lucide) — depend on React; keep co-located
+            // so Rollup can guarantee vendor-react is resolved first.
             if (id.includes('@radix-ui') || id.includes('lucide-react')) {
               return 'vendor-ui'
             }
-            // Everything else in node_modules
-            return 'vendor-misc'
+            // Do NOT add a catch-all 'vendor-misc' here — letting Rollup handle
+            // remaining deps by default prevents cross-chunk React access errors
+            // where a library reads React.memo before vendor-react has evaluated.
           }
         },
       },
