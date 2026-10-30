@@ -4,6 +4,7 @@ const User = require('../models/User');
 const Tenant = require('../models/Tenant');
 const sendEmail = require('../utils/sendEmail');
 const { sendTokenResponse } = require('../utils/generateToken');
+const { getPrimaryClientUrl } = require('../utils/corsConfig');
 
 // ── POST /api/invitations — send invitation
 exports.sendInvitation = async (req, res, next) => {
@@ -47,7 +48,7 @@ exports.sendInvitation = async (req, res, next) => {
 
     // Send email
     try {
-      const inviteUrl = `${process.env.CLIENT_URL}/accept-invitation/${rawToken}`;
+      const inviteUrl = `${getPrimaryClientUrl()}/accept-invitation/${rawToken}`;
       await sendEmail({
         to: email,
         subject: `You're invited to join ${tenant.name} on TEAM UPDATE CRM`,
@@ -219,7 +220,7 @@ exports.resendInvitation = async (req, res, next) => {
     await invitation.save();
 
     try {
-      const inviteUrl = `${process.env.CLIENT_URL}/accept-invitation/${rawToken}`;
+      const inviteUrl = `${getPrimaryClientUrl()}/accept-invitation/${rawToken}`;
       await sendEmail({
         to: invitation.email,
         subject: `Reminder: You're invited to join ${invitation.tenantId.name}`,
@@ -265,7 +266,7 @@ exports.resendByUser = async (req, res, next) => {
     await invitation.save();
 
     try {
-      const inviteUrl = `${process.env.CLIENT_URL}/accept-invitation/${rawToken}`;
+      const inviteUrl = `${getPrimaryClientUrl()}/accept-invitation/${rawToken}`;
       await sendEmail({
         to: invitation.email,
         subject: `Reminder: You're invited to join ${invitation.tenantId.name}`,

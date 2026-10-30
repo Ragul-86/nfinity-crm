@@ -68,4 +68,26 @@ function makeOriginValidator(allowedOrigins) {
   };
 }
 
-module.exports = { buildAllowedOrigins, makeOriginValidator };
+/**
+ * Return the primary (first) client URL from CLIENT_URL.
+ *
+ * CLIENT_URL may be a single URL or a comma-separated list introduced to
+ * support multiple CORS origins.  Controllers that build redirect or email
+ * links must use ONE valid URL — they take the first entry so the result is
+ * always a well-formed URL regardless of how many domains are listed.
+ *
+ * Examples:
+ *   'https://crm.nfinitypartner.com'                         → 'https://crm.nfinitypartner.com'
+ *   'https://nfinity-crm.vercel.app,https://crm.example.com' → 'https://nfinity-crm.vercel.app'
+ *   ''  / undefined                                           → 'http://localhost:5173'
+ *
+ * @param {Object} env - environment object (default: process.env)
+ * @returns {string} - a single, trimmed URL with no trailing slash
+ */
+function getPrimaryClientUrl(env) {
+  if (env === undefined) env = process.env;
+  const raw = (env.CLIENT_URL || '').split(',')[0].trim();
+  return raw || 'http://localhost:5173';
+}
+
+module.exports = { buildAllowedOrigins, makeOriginValidator, getPrimaryClientUrl };

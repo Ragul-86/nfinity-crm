@@ -8,6 +8,7 @@ const { encrypt, decrypt, encryptFields, decryptFields, maskSecret } = require('
 const { getTenantFilter, injectTenantId } = require('../middleware/auth');
 const { createDriveWatch, stopDriveWatch } = require('../utils/driveWatch');
 const { isValidPhone, resolvePhone } = require('../utils/phoneUtils');
+const { getPrimaryClientUrl } = require('../utils/corsConfig');
 
 // ── Inline error helper (no AppError class needed) ───────────────────────────
 const err = (msg, code = 400) => Object.assign(new Error(msg), { statusCode: code });
@@ -2033,7 +2034,7 @@ exports.oauthInit = async (req, res, next) => {
 exports.oauthCallback = async (req, res, next) => {
   const { provider }  = req.params;
   const { code, state, error } = req.query;
-  const clientUrl = process.env.CLIENT_URL || 'http://localhost:5173';
+  const clientUrl = getPrimaryClientUrl();
   const closeUrl  = (status, extra = '') =>
     `${clientUrl}/oauth-callback?status=${status}&provider=${provider}${extra}`;
 

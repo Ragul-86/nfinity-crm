@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const User = require('../models/User');
 const { sendTokenResponse } = require('../utils/generateToken');
 const sendEmail = require('../utils/sendEmail');
+const { getPrimaryClientUrl } = require('../utils/corsConfig');
 
 // @route POST /api/auth/register
 exports.register = async (req, res, next) => {
@@ -23,7 +24,7 @@ exports.register = async (req, res, next) => {
       emailVerificationExpire: Date.now() + 24 * 60 * 60 * 1000,
     });
 
-    const verifyUrl = `${process.env.CLIENT_URL}/verify-email/${verificationToken}`;
+    const verifyUrl = `${getPrimaryClientUrl()}/verify-email/${verificationToken}`;
     try {
       await sendEmail({
         to: email,
@@ -129,7 +130,7 @@ exports.forgotPassword = async (req, res, next) => {
     user.resetPasswordExpire = Date.now() + 60 * 60 * 1000; // 1 hour
     await user.save({ validateBeforeSave: false });
 
-    const resetUrl = `${process.env.CLIENT_URL}/reset-password/${resetToken}`;
+    const resetUrl = `${getPrimaryClientUrl()}/reset-password/${resetToken}`;
     try {
       await sendEmail({
         to: user.email,

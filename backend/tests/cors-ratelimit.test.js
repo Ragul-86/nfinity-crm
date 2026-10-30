@@ -24,7 +24,7 @@ const http = require('http');
 const express = require('express');
 const cors = require('cors');
 const rateLimit = require('express-rate-limit');
-const { buildAllowedOrigins, makeOriginValidator } = require('../utils/corsConfig');
+const { buildAllowedOrigins, makeOriginValidator, getPrimaryClientUrl } = require('../utils/corsConfig');
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -90,6 +90,54 @@ function startServer(app) {
     const server = app.listen(0, '127.0.0.1', () => resolve(server));
   });
 }
+
+// ─── Unit tests: getPrimaryClientUrl ─────────────────────────────────────────
+//
+// These tests verify the fix for the malformed OAuth redirect URL bug.
+// When CLIENT_URL is comma-separated (e.g. for CORS), controllers that build
+// redirect/email links must use only the first (primary) URL.
+
+describe('getPrimaryClientUrl — OAuth redirect URL extraction', () => {
+  test('returns the sole URL when CLIENT_URL is a single value', () => {
+    expect(getPrimaryClientUrl({ CLIENT_URL: 'https://crm.nfinitypartner.com' }))
+      .toBe('https://crm.nfinitypartner.com');
+  });
+
+  test('returns only the FIRST URL when CLIENT_URL is comma-separated', () => {
+    // This is the bug scenario: CLIENT_URL set to two domains for CORS.
+    // The OAuth redirect must go to ONE valid URL, not a malformed joined string.
+    expect(getPrimaryClientUrl({
+      CLIENT_URL: 'https://nfinity-crm.vercel.app,https://crm.nfinitypartner.com',
+    })).toBe('https://nfinity-crm.vercel.app');
+  });
+
+  test('trims whitespace around the first entry', () => {
+    expect(getPrimaryClientUrl({
+      CLIENT_URL: '  https://crm.nfinitypartner.com , https://other.example.com',
+    })).toBe('https://crm.nfinitypartner.com');
+  });
+
+  test('falls back to localhost:5173 when CLIENT_URL is empty string', () => {
+    expect(getPrimaryClientUrl({ CLIENT_URL: '' })).toBe('http://localhost:5173');
+  });
+
+  test('falls back to localhost:5173 when CLIENT_URL is absent from env', () => {
+    expect(getPrimaryClientUrl({})).toBe('http://localhost:5173');
+  });
+
+  test('result is never a malformed comma-containing string', () => {
+    const url = getPrimaryClientUrl({
+      CLIENT_URL: 'https://a.example.com,https://b.example.com',
+    });
+    expect(url).not.toContain(',');
+    expect(() => new URL(url)).not.toThrow();  // must be a parseable URL
+  });
+
+  test('single-URL value produces a parseable URL', () => {
+    const url = getPrimaryClientUrl({ CLIENT_URL: 'https://crm.nfinitypartner.com' });
+    expect(() => new URL(url)).not.toThrow();
+  });
+});
 
 // ─── Unit tests: buildAllowedOrigins ─────────────────────────────────────────
 

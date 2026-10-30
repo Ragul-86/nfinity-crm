@@ -17,6 +17,7 @@ const AuditLog = require('../models/AuditLog');
 const Integration = require('../models/Integration');
 const AISettings  = require('../models/AISettings');
 const { logAction } = require('../utils/auditLogger');
+const { getPrimaryClientUrl } = require('../utils/corsConfig');
 
 // ─── DASHBOARD / STATS ────────────────────────────────────────────────────────
 
@@ -244,7 +245,7 @@ exports.createTenant = async (req, res, next) => {
         superAdmin.resetPasswordExpire = Date.now() + 72 * 3600000;
         await superAdmin.save({ validateBeforeSave: false });
         const sendEmail = require('../utils/sendEmail');
-        const setupUrl = `${process.env.CLIENT_URL}/accept-invitation/${token}`;
+        const setupUrl = `${getPrimaryClientUrl()}/accept-invitation/${token}`;
         await sendEmail({
           to: adminEmail,
           subject: `Your ${name} workspace is ready`,

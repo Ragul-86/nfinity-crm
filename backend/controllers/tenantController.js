@@ -7,6 +7,7 @@ const Campaign = require('../models/Campaign');
 const Task = require('../models/Task');
 const { sendTokenResponse } = require('../utils/generateToken');
 const sendEmail = require('../utils/sendEmail');
+const { getPrimaryClientUrl } = require('../utils/corsConfig');
 
 // ── GET /api/platform/tenants — list all workspaces
 exports.listTenants = async (req, res, next) => {
@@ -120,7 +121,7 @@ exports.createTenant = async (req, res, next) => {
         superAdmin.resetPasswordExpire = Date.now() + 72 * 60 * 60 * 1000; // 72h
         await superAdmin.save({ validateBeforeSave: false });
 
-        const setupUrl = `${process.env.CLIENT_URL}/accept-invitation/${setupToken}`;
+        const setupUrl = `${getPrimaryClientUrl()}/accept-invitation/${setupToken}`;
         await sendEmail({
           to: adminEmail,
           subject: `You've been added to ${name} — Set up your account`,
