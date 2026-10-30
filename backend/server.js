@@ -75,6 +75,8 @@ const pipelineDefRoutes     = require('./routes/pipelineDefs');
 const leadStreamRoutes      = require('./routes/leadStreams');
 const internalSyncRoutes    = require('./routes/internalSync');
 
+const { buildAllowedOrigins, makeOriginValidator } = require('./utils/corsConfig');
+
 const app = express();
 
 // ─── DB connect → seed & backfill ─────────────────────────────────────────────
@@ -237,27 +239,26 @@ connectDB().then(async () => {
 // ─── Security middleware ───────────────────────────────────────────────────────
 app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
 
+// Trust exactly one reverse-proxy hop (Render's load balancer).
+// Required so that express-rate-limit can read the real client IP from the
+// X-Forwarded-For header that Render injects on every request.
+// Using the number 1 (not `true`) limits trust to Render's own infrastructure
+// hop only — deeper X-Forwarded-For values injected by clients are ignored,
+// preventing rate-limit bypass via a forged XFF header.
+app.set('trust proxy', 1);
+
 // Rate limiting
 const limiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 500 });
 app.use('/api/', limiter);
 
-// CORS — allow X-Tenant-Id header for impersonation
-const ALLOWED_ORIGINS = [
-  process.env.CLIENT_URL,
-  'http://localhost:5173',
-  'http://localhost:3000',
-].filter(Boolean);
+// CORS — allow X-Tenant-Id header for multi-tenant impersonation.
+// CLIENT_URL may be a comma-separated list to support multiple production
+// origins (e.g. the Vercel domain AND a custom subdomain).
+// See utils/corsConfig.js for the full origin-validation rules.
+const ALLOWED_ORIGINS = buildAllowedOrigins();
 
 app.use(cors({
-  origin: (origin, callback) => {
-    // Allow non-browser requests (Postman, curl, server-to-server)
-    if (!origin) return callback(null, true);
-    // Allow any Vercel preview or production deployment
-    if (origin.endsWith('.vercel.app') || origin.endsWith('.onrender.com')) return callback(null, true);
-    // Allow configured origins
-    if (ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
-    callback(new Error(`CORS: ${origin} not allowed`));
-  },
+  origin: makeOriginValidator(ALLOWED_ORIGINS),
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Tenant-Id'],
