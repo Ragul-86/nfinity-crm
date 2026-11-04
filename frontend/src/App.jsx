@@ -52,6 +52,8 @@ const FinanceWorkspace    = lazy(() => import('@/pages/FinanceWorkspace'))
 const OperationsWorkspace = lazy(() => import('@/pages/OperationsWorkspace'))
 const AuditLogs           = lazy(() => import('@/pages/AuditLogs'))
 const SystemHealth        = lazy(() => import('@/pages/SystemHealth'))
+const SalesHub            = lazy(() => import('@/pages/sales/SalesHub'))
+const SalesProspectDetail = lazy(() => import('@/pages/sales/SalesProspectDetail'))
 
 // ── Platform Super Admin pages (lazy — separate user type) ───────────────────
 const PlatformDashboard      = lazy(() => import('@/pages/platform/PlatformDashboard'))
@@ -189,6 +191,8 @@ function App() {
                   <Route path="/operations/*" element={<OperationsWorkspace />} />
                   <Route path="/audit-logs" element={<AuditLogs />} />
                   <Route path="/system-health" element={<SystemHealth />} />
+                  <Route path="/sales/prospects/:id" element={<SalesProspectDetail />} />
+                  <Route path="/sales/*" element={<SalesHub />} />
                   <Route path="/settings/integrations" element={<Integrations />} />
                   <Route path="/settings/*" element={<Settings />} />
                 </Route>

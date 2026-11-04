@@ -13,7 +13,7 @@ import { useAuth } from '@/contexts/AuthContext'
 // ── Tenant workspace nav (all roles except platform_super_admin) ──────────────
 const TENANT_NAV = [
   { label: 'Dashboard',        icon: LayoutDashboard, href: '/',             minRole: 'employee' },
-  { label: 'Sales Pipeline',   icon: KanbanSquare,    href: '/pipeline',          minRole: 'manager' },
+  { label: 'Sales Pipeline',   icon: KanbanSquare,    href: '/sales',             minRole: 'manager' },
   { label: 'Leads',            icon: Users,           href: '/crm-leads',           minRole: 'employee' },
   { label: 'Leads Dashboard',  icon: FileSpreadsheet,  href: '/leads/dashboard',    minRole: 'manager' },
   { label: 'Sheet Leads Table', icon: TableProperties, href: '/leads/sheet-table', minRole: 'manager' },

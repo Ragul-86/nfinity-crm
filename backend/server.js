@@ -74,6 +74,7 @@ const gsheetWebhookRoutes   = require('./routes/gsheetWebhook');
 const pipelineDefRoutes     = require('./routes/pipelineDefs');
 const leadStreamRoutes      = require('./routes/leadStreams');
 const internalSyncRoutes    = require('./routes/internalSync');
+const salesRoutes           = require('./routes/sales');
 
 const { buildAllowedOrigins, makeOriginValidator } = require('./utils/corsConfig');
 
@@ -319,6 +320,8 @@ app.use('/api/internal', internalSyncRoutes);
 app.use('/api/pipeline-defs', pipelineDefRoutes);
 // Lead Source Stream dashboards (tenant-scoped, requires auth)
 app.use('/api/lead-streams', leadStreamRoutes);
+// B2B Sales Pipeline (tenant-scoped, requires auth)
+app.use('/api/sales', salesRoutes);
 
 // 404 handler
 app.use('*', (req, res) => res.status(404).json({ success: false, message: `Route ${req.originalUrl} not found` }));
