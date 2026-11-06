@@ -15,7 +15,7 @@ export default function BusinessInsights() {
   const { data, isLoading } = useQuery({
     queryKey: ['analytics-business-insights'],
     queryFn: () => api.get('/analytics/business-insights').then(r => r.data.data),
-    refetchInterval: 60_000,
+    refetchInterval: 300_000,
   })
 
   const d = data || {}

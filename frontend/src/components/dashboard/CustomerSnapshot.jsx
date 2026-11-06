@@ -19,7 +19,7 @@ export default function CustomerSnapshot() {
   const { data, isLoading } = useQuery({
     queryKey: ['analytics-customer-snapshot'],
     queryFn: () => api.get('/analytics/customer-snapshot').then(r => r.data.data),
-    refetchInterval: 30_000,
+    refetchInterval: 300_000,
   })
 
   const d = data || {}

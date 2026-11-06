@@ -240,6 +240,13 @@ connectDB().then(async () => {
 // ─── Security middleware ───────────────────────────────────────────────────────
 app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
 
+// ─── Compression ──────────────────────────────────────────────────────────────
+// IMPORTANT: Run `npm install compression --save` in /backend before deploying.
+// The compression package is not yet installed; this require will throw on startup
+// until it is installed. Uncomment the two lines below after installing.
+// const compression = require('compression');
+// app.use(compression());
+
 // Trust exactly one reverse-proxy hop (Render's load balancer).
 // Required so that express-rate-limit can read the real client IP from the
 // X-Forwarded-For header that Render injects on every request.

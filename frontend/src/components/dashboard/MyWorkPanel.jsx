@@ -28,7 +28,7 @@ export default function MyWorkPanel() {
   const { data, isLoading } = useQuery({
     queryKey: ['analytics-my-work'],
     queryFn: () => api.get('/analytics/my-work').then(r => r.data.data),
-    refetchInterval: 30_000,
+    refetchInterval: 300_000,
   })
 
   const d = data || {}

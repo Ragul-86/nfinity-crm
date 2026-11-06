@@ -19,7 +19,7 @@ export default function FinanceSnapshot() {
   const { data, isLoading } = useQuery({
     queryKey: ['analytics-finance-snapshot'],
     queryFn: () => api.get('/analytics/finance-snapshot').then(r => r.data.data),
-    refetchInterval: 30_000,
+    refetchInterval: 300_000,
   })
 
   const d = data || {}

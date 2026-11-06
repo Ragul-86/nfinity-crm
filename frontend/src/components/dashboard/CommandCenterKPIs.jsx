@@ -63,7 +63,7 @@ export default function CommandCenterKPIs() {
   const { data, isLoading } = useQuery({
     queryKey: ['analytics-command-center'],
     queryFn: () => api.get('/analytics/command-center').then(r => r.data.data),
-    refetchInterval: 30_000,
+    refetchInterval: 300_000,
     refetchOnWindowFocus: true,
   })
 

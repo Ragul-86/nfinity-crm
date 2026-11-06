@@ -31,7 +31,7 @@ export default function ActivityFeed({ maxItems = 12 }) {
   const { data, isLoading } = useQuery({
     queryKey: ['analytics-activity', maxItems],
     queryFn: () => api.get(`/analytics/activity-feed?limit=${maxItems}`).then(r => r.data.data),
-    refetchInterval: 30_000,
+    refetchInterval: 300_000,
   })
 
   const activities = data || []

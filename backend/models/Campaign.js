@@ -74,4 +74,6 @@ campaignSchema.pre('save', function (next) {
   next();
 });
 
+campaignSchema.index({ tenantId: 1, status: 1, isArchived: 1 });
+
 module.exports = mongoose.model('Campaign', campaignSchema);

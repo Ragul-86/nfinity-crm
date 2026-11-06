@@ -29,7 +29,7 @@ export default function PipelineSnapshot() {
   const { data, isLoading } = useQuery({
     queryKey: ['analytics-pipeline-snapshot'],
     queryFn: () => api.get('/analytics/pipeline-snapshot').then(r => r.data.data),
-    refetchInterval: 30_000,
+    refetchInterval: 300_000,
   })
 
   const stages = data?.stages || []

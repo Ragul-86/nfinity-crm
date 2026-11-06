@@ -85,7 +85,7 @@ function KPICard({ title, value, icon: Icon, color, change, prefix, suffix, load
 
 const tooltipStyle = { backgroundColor: 'hsl(var(--card))', border: '1px solid hsl(var(--border))', borderRadius: '8px', color: 'hsl(var(--foreground))' }
 const ADMIN_ROLES = ['super_admin', 'admin', 'manager']
-const AUTO_REFRESH_MS = 30_000
+const AUTO_REFRESH_MS = 300_000
 
 export default function Dashboard() {
   const { user } = useAuth()
@@ -101,7 +101,6 @@ function AdminDashboard() {
     queryKey: ['dashboard'],
     queryFn: () => api.get('/dashboard/stats').then(r => r.data.data),
     refetchInterval: AUTO_REFRESH_MS,
-    refetchOnWindowFocus: true,
   })
 
   const { data: billingStats } = useQuery({
@@ -501,7 +500,6 @@ function EmployeeDashboard() {
     queryKey: ['employee-dashboard'],
     queryFn: () => api.get('/dashboard/employee-stats').then(r => r.data.data),
     refetchInterval: AUTO_REFRESH_MS,
-    refetchOnWindowFocus: true,
   })
 
   const w = data?.widgets || {}

@@ -43,4 +43,7 @@ const taskSchema = new mongoose.Schema({
   tenantId: { type: mongoose.Schema.Types.ObjectId, ref: 'Tenant', index: true, sparse: true },
 }, { timestamps: true });
 
+taskSchema.index({ tenantId: 1, status: 1 });
+taskSchema.index({ tenantId: 1, assignedTo: 1, status: 1, dueDate: 1 });
+
 module.exports = mongoose.model('Task', taskSchema);

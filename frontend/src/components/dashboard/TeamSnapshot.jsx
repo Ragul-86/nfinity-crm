@@ -12,7 +12,7 @@ export default function TeamSnapshot() {
   const { data, isLoading } = useQuery({
     queryKey: ['analytics-team-snapshot'],
     queryFn: () => api.get('/analytics/team-snapshot').then(r => r.data.data),
-    refetchInterval: 30_000,
+    refetchInterval: 300_000,
   })
 
   const d = data || {}
