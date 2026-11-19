@@ -9,6 +9,7 @@ const { getTenantFilter, injectTenantId } = require('../middleware/auth');
 const { createDriveWatch, stopDriveWatch } = require('../utils/driveWatch');
 const { isValidPhone, resolvePhone } = require('../utils/phoneUtils');
 const { getPrimaryClientUrl } = require('../utils/corsConfig');
+const { resolveLeadPipeline } = require('../utils/pipelineRouting');
 
 // ── Inline error helper (no AppError class needed) ───────────────────────────
 const err = (msg, code = 400) => Object.assign(new Error(msg), { statusCode: code });
@@ -687,39 +688,11 @@ function normaliseSrcGS(raw) {
   return 'other';
 }
 
-// Pipeline resolution for native Google Sheets sync — mirrors gsheetWebhookController
-async function resolvePipelineGS(tenantId, { adId, metaFormId, spreadsheetId, sheetName, source }) {
-  try {
-    const tiers = [
-      adId                           ? { adId }                               : null,
-      metaFormId                     ? { metaFormId }                         : null,
-      // Tier 3 (new): per-spreadsheet per-tab — more specific than sheetName alone
-      (spreadsheetId && sheetName)   ? { spreadsheetId, sheetName }           : null,
-      sheetName                      ? { sheetName }                          : null,
-      source                         ? { source }                             : null,
-    ].filter(Boolean);
-
-    let pipeline = null, stageOverride = null;
-    for (const criterion of tiers) {
-      const mapping = await PipelineMapping.findOne({ tenantId, isActive: true, ...criterion }).populate('pipelineId').lean();
-      if (mapping && mapping.pipelineId && mapping.pipelineId.isActive) {
-        pipeline      = mapping.pipelineId;
-        stageOverride = mapping.stageId ? String(mapping.stageId) : null;
-        break;
-      }
-    }
-    if (!pipeline) pipeline = await Pipeline.findOne({ tenantId, isDefault: true, isActive: true }).lean();
-    if (!pipeline) pipeline = await Pipeline.findOne({ tenantId, isActive: true }).sort({ createdAt: 1 }).lean();
-    if (!pipeline) return { pipelineId: null, stageId: null };
-
-    const sortedStages = [...(pipeline.stages || [])].sort((a, b) => a.order - b.order);
-    let stage = stageOverride ? sortedStages.find(s => String(s._id) === stageOverride) : null;
-    if (!stage) stage = sortedStages.find(s => s.type === 'open') || sortedStages[0];
-    return { pipelineId: pipeline._id, stageId: stage?._id || null };
-  } catch (e) {
-    console.error('[GSheets Sync] pipeline resolution error:', e.message);
-    return { pipelineId: null, stageId: null };
-  }
+// Pipeline resolution for native Google Sheets sync.
+// Delegates to the shared router (mapping → saved per-sheet pipelineId →
+// keyword classification → tenant default → any active pipeline).
+async function resolvePipelineGS(tenantId, leadInfo) {
+  return resolveLeadPipeline(tenantId, leadInfo);
 }
 
 // Use refresh_token to get a new access_token from Google
@@ -1421,7 +1394,7 @@ exports.syncGoogleSheet = async (req, res, next) => {
 
     // Multi-sheet support: read primary sheet from config.spreadsheets if available,
     // otherwise fall back to legacy single config.spreadsheetId fields.
-    let spreadsheetId, sheetName, syncMode;
+    let spreadsheetId, sheetName, syncMode, savedPipelineId = null;
     const configSheets = Array.isArray(doc.config?.spreadsheets) && doc.config.spreadsheets.length > 0
       ? doc.config.spreadsheets
       : null;
@@ -1437,6 +1410,7 @@ exports.syncGoogleSheet = async (req, res, next) => {
       spreadsheetId = primary.spreadsheetId;
       sheetName     = primary.sheetName;
       syncMode      = primary.syncMode === 'all' ? 'all' : 'single';
+      savedPipelineId = primary.pipelineId || null;
     } else {
       const cfg = doc.config || {};
       spreadsheetId = cfg.spreadsheetId;
@@ -1681,12 +1655,17 @@ exports.syncGoogleSheet = async (req, res, next) => {
           // Business requirement: every distinct valid source row must become its own CRM lead,
           // even if another lead shares the same phone or email.
           // Row identity is guaranteed by externalLeadId (Steps 1 + 1b above).
-          const { pipelineId, stageId } = await resolvePipelineGS(tf.tenantId, {
+          const { pipelineId, stageId, stageName, stageType } = await resolvePipelineGS(tf.tenantId, {
             adId:          attribution.adId,
             metaFormId:    attribution.metaFormId,
             spreadsheetId: spreadsheetId,   // enables per-spreadsheet-per-tab mapping
             sheetName:     tabName,
             source,
+            // saved per-sheet pipeline + text used by keyword classification
+            savedPipelineId,
+            adName:        attribution.adName,
+            metaFormName:  attribution.metaFormName,
+            campaignName:  attribution.campaignName,
           });
 
           // Step 5 — Create new lead
@@ -1704,7 +1683,7 @@ exports.syncGoogleSheet = async (req, res, next) => {
             tenantId:  tf.tenantId,
             createdBy: req.user._id,
             ...attribution,
-            ...(pipelineId ? { pipelineId, stageId } : {}),
+            ...(pipelineId ? { pipelineId, stageId, stageName, stageType } : {}),
           });
           syncDiag(`CREATED tab="${tabName}" R=${rowIndex} key="${externalLeadId}"`);
           created++;

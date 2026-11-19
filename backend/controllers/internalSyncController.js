@@ -21,6 +21,7 @@ const PipelineMapping = require('../models/PipelineMapping');
 const { decryptFields, encryptFields } = require('../utils/encryption');
 const { createDriveWatch, stopDriveWatch } = require('../utils/driveWatch');
 const { isValidPhone, resolvePhone } = require('../utils/phoneUtils');
+const { resolveLeadPipeline } = require('../utils/pipelineRouting');
 
 // ─── Sensitive fields for google_sheets provider ──────────────────────────────
 const GS_SENSITIVE = ['accessToken', 'refreshToken'];
@@ -157,41 +158,14 @@ function normaliseSrc(raw) {
   return 'other';
 }
 
-async function resolvePipeline(tenantId, { adId, metaFormId, spreadsheetId, sheetName, source }) {
-  try {
-    const tiers = [
-      adId                           ? { adId }                               : null,
-      metaFormId                     ? { metaFormId }                         : null,
-      // Tier 3 (new): per-spreadsheet per-tab — more specific than sheetName alone
-      (spreadsheetId && sheetName)   ? { spreadsheetId, sheetName }           : null,
-      sheetName                      ? { sheetName }                          : null,
-      source                         ? { source }                             : null,
-    ].filter(Boolean);
-
-    let pipeline = null, stageOverride = null;
-    for (const criterion of tiers) {
-      const mapping = await PipelineMapping.findOne({ tenantId, isActive: true, ...criterion }).populate('pipelineId').lean();
-      if (mapping && mapping.pipelineId && mapping.pipelineId.isActive) {
-        pipeline      = mapping.pipelineId;
-        stageOverride = mapping.stageId ? String(mapping.stageId) : null;
-        break;
-      }
-    }
-    if (!pipeline) pipeline = await Pipeline.findOne({ tenantId, isDefault: true, isActive: true }).lean();
-    if (!pipeline) pipeline = await Pipeline.findOne({ tenantId, isActive: true }).sort({ createdAt: 1 }).lean();
-    if (!pipeline) return { pipelineId: null, stageId: null };
-
-    const sortedStages = [...(pipeline.stages || [])].sort((a, b) => a.order - b.order);
-    let stage = stageOverride ? sortedStages.find(s => String(s._id) === stageOverride) : null;
-    if (!stage) stage = sortedStages.find(s => s.type === 'open') || sortedStages[0];
-    return { pipelineId: pipeline._id, stageId: stage?._id || null };
-  } catch {
-    return { pipelineId: null, stageId: null };
-  }
+// Delegates to the shared router (mapping → saved per-sheet pipelineId →
+// keyword classification → tenant default → any active pipeline).
+async function resolvePipeline(tenantId, leadInfo) {
+  return resolveLeadPipeline(tenantId, leadInfo);
 }
 
 // ─── Core: sync one tab from a spreadsheet for a given tenant ────────────────
-async function syncTab(accessToken, tenantId, spreadsheetId, tabName) {
+async function syncTab(accessToken, tenantId, spreadsheetId, tabName, savedPipelineId = null) {
   // Passing only the sheet name as the range returns ALL rows that contain data.
   // No row cap — Google Sheets API handles up to 10M cells per request.
   const range    = encodeURIComponent(tabName);
@@ -345,12 +319,17 @@ async function syncTab(accessToken, tenantId, spreadsheetId, tabName) {
       // Business requirement: every distinct valid source row must become its own CRM lead,
       // even if another lead shares the same phone or email.
       // Row identity is guaranteed by externalLeadId (Steps 1 + 1b above).
-      const { pipelineId, stageId } = await resolvePipeline(tenantId, {
+      const { pipelineId, stageId, stageName, stageType } = await resolvePipeline(tenantId, {
         adId:          attribution.adId,
         metaFormId:    attribution.metaFormId,
         spreadsheetId: spreadsheetId,   // enables per-spreadsheet-per-tab mapping
         sheetName:     tabName,
         source,
+        // saved per-sheet pipeline + text used by keyword classification
+        savedPipelineId,
+        adName:        attribution.adName,
+        metaFormName:  attribution.metaFormName,
+        campaignName:  attribution.campaignName,
       });
 
       // Step 5: create
@@ -367,7 +346,7 @@ async function syncTab(accessToken, tenantId, spreadsheetId, tabName) {
         tenantId,
         createdBy: null, // scheduler — no logged-in user
         ...attribution,
-        ...(pipelineId ? { pipelineId, stageId } : {}),
+        ...(pipelineId ? { pipelineId, stageId, stageName, stageType } : {}),
       });
       created++;
 
@@ -452,7 +431,7 @@ async function syncIntegrationDoc(doc, targetSpreadsheetId = null) {
     }
 
     for (const tabName of tabsToSync) {
-      const tabResult = await syncTab(accessToken, tenantId, spreadsheetId, tabName);
+      const tabResult = await syncTab(accessToken, tenantId, spreadsheetId, tabName, sheetCfg.pipelineId || null);
 
       if (tabResult.status === 'auth_expired') {
         await Integration.findByIdAndUpdate(doc._id, {

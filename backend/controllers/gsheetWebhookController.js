@@ -21,6 +21,7 @@ const Integration     = require('../models/Integration');
 const Pipeline        = require('../models/Pipeline');
 const PipelineMapping = require('../models/PipelineMapping');
 const { decrypt }     = require('../utils/encryption');
+const { resolveLeadPipeline } = require('../utils/pipelineRouting');
 
 // ── HMAC verification ──────────────────────────────────────────────────────────
 function verifyHmac(secret, rawBody, signature) {
@@ -90,70 +91,11 @@ function extractAttribution(customFields, rowSheetName) {
 }
 
 // ── Resolve pipeline for an incoming lead ──────────────────────────────────────
-// Checks PipelineMapping in strict priority order: adId → metaFormId → sheetName → source
-// Each tier is queried independently so a higher-priority match always wins.
-// Falls back to workspace default pipeline, then any active pipeline.
+// Delegates to the shared router (mapping → saved per-sheet pipelineId →
+// keyword classification → tenant default → any active pipeline).
 // Returns { pipelineId, stageId, stageName, stageType } or all nulls.
-async function resolvePipeline(workspaceId, { adId, metaFormId, sheetName, source }) {
-  try {
-    // Priority tiers — checked in order, stop at first hit
-    const tiers = [
-      adId       ? { adId }       : null,
-      metaFormId ? { metaFormId } : null,
-      sheetName  ? { sheetName }  : null,
-      source     ? { source }     : null,
-    ].filter(Boolean);
-
-    let pipeline = null;
-    let stageOverride = null;
-
-    for (const criterion of tiers) {
-      const mapping = await PipelineMapping.findOne({
-        tenantId: workspaceId,
-        isActive: true,
-        ...criterion,
-      }).populate('pipelineId').lean();
-
-      if (mapping && mapping.pipelineId && mapping.pipelineId.isActive) {
-        pipeline      = mapping.pipelineId;
-        stageOverride = mapping.stageId ? String(mapping.stageId) : null;
-        break;  // strict priority — stop at first hit
-      }
-    }
-
-    // 2. Fall back to workspace default pipeline
-    if (!pipeline) {
-      pipeline = await Pipeline.findOne({ tenantId: workspaceId, isDefault: true, isActive: true }).lean();
-    }
-
-    // 3. If still no pipeline, take any active pipeline
-    if (!pipeline) {
-      pipeline = await Pipeline.findOne({ tenantId: workspaceId, isActive: true }).sort({ createdAt: 1 }).lean();
-    }
-
-    if (!pipeline) return { pipelineId: null, stageId: null, stageName: null, stageType: 'open' };
-
-    // Determine the starting stage
-    const sortedStages = [...(pipeline.stages || [])].sort((a, b) => a.order - b.order);
-    let stage = null;
-
-    if (stageOverride) {
-      stage = sortedStages.find(s => String(s._id) === stageOverride);
-    }
-    if (!stage) {
-      stage = sortedStages.find(s => s.type === 'open') || sortedStages[0];
-    }
-
-    return {
-      pipelineId: pipeline._id,
-      stageId:    stage?._id   || null,
-      stageName:  stage?.name  || null,
-      stageType:  stage?.type  || 'open',
-    };
-  } catch (e) {
-    console.error('GSheet webhook: pipeline resolution failed:', e.message);
-    return { pipelineId: null, stageId: null, stageName: null, stageType: 'open' };
-  }
+async function resolvePipeline(workspaceId, leadInfo) {
+  return resolveLeadPipeline(workspaceId, leadInfo);
 }
 
 // ── Main handler ───────────────────────────────────────────────────────────────
@@ -284,6 +226,12 @@ exports.receiveLeads = async (req, res) => {
           metaFormId: attribution.metaFormId,
           sheetName:  attribution.sheetName,
           source:     normaliseSource(row.source),
+          // saved per-sheet pipeline (if the integration stores one) + classification text
+          savedPipelineId: (integration.config?.spreadsheets || [])
+            .find(s => s.spreadsheetId && s.spreadsheetId === incomingSpreadsheetId)?.pipelineId || null,
+          adName:       attribution.adName,
+          metaFormName: attribution.metaFormName,
+          campaignName: attribution.campaignName,
         });
 
         await Lead.create({
