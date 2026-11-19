@@ -305,14 +305,25 @@ export default function GoogleSheetsCard({
         // Pass the new pipelineId (or undefined to preserve existing if cleared)
         ...(pipelineId ? { pipelineId } : { pipelineId: null }),
       }).then(r => r.data),
-    onSuccess: (_, { sheet }) => {
-      toast.success('Pipeline saved')
+    onSuccess: (data, { sheet }) => {
+      const moved = data?.leadsMoved || 0
+      toast.success(
+        moved > 0
+          ? `Pipeline saved — ${moved} existing lead${moved === 1 ? '' : 's'} moved`
+          : 'Pipeline saved'
+      )
       qc.invalidateQueries(['integrations'])
       qc.invalidateQueries(['gsheet-contexts'])
+      // Refresh the pipeline Kanban and pipeline list (lead counts) after leads move
+      qc.invalidateQueries({ queryKey: ['pipeline-kanban'] })
+      qc.invalidateQueries({ queryKey: ['pipelines-list'] })
       setSavingPipelineId(null)
     },
     onError: (e, { sheet }) => {
       toast.error(e?.response?.data?.message || 'Failed to save pipeline')
+      // Re-sync the dropdown with what the server actually holds
+      qc.invalidateQueries(['integrations'])
+      qc.invalidateQueries(['gsheet-contexts'])
       setSavingPipelineId(null)
     },
   })

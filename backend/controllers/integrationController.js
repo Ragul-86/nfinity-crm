@@ -1,5 +1,6 @@
 const crypto = require('crypto');
 const https  = require('https');
+const mongoose = require('mongoose');
 const Integration    = require('../models/Integration');
 const Pipeline       = require('../models/Pipeline');
 const PipelineMapping = require('../models/PipelineMapping');
@@ -10,6 +11,7 @@ const { createDriveWatch, stopDriveWatch } = require('../utils/driveWatch');
 const { isValidPhone, resolvePhone } = require('../utils/phoneUtils');
 const { getPrimaryClientUrl } = require('../utils/corsConfig');
 const { resolveLeadPipeline } = require('../utils/pipelineRouting');
+const { applySheetPipelineSelection } = require('../utils/sheetPipelineSync');
 
 // ── Inline error helper (no AppError class needed) ───────────────────────────
 const err = (msg, code = 400) => Object.assign(new Error(msg), { statusCode: code });
@@ -868,6 +870,17 @@ exports.verifySheetAccess = async (req, res, next) => {
   }
 };
 
+// True only when MongoDB itself reports that transactions are unavailable
+// (standalone server). Any other error must NOT trigger the sequential fallback.
+function isTransactionUnsupported(e) {
+  const msg = String(e?.message || '');
+  const standalone = (e?.codeName === 'IllegalOperation' || e?.code === 20) &&
+    /transaction numbers are only allowed on a replica set member or mongos/i.test(msg);
+  const unsupported = e?.name === 'MongoCompatibilityError' &&
+    /transactions are not supported/i.test(msg);
+  return standalone || unsupported;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /api/integrations/google_sheets/config
 // Save the spreadsheetId + syncMode (+ sheetName if syncMode='single') chosen by the user.
@@ -884,10 +897,12 @@ exports.saveSheetConfig = async (req, res, next) => {
 
     // ── Validate pipelineId if provided — must belong to this tenant and be active ──
     let validatedPipelineId = null;
+    let validatedPipeline   = null;
     if (rawPipelineId) {
       const pipeline = await Pipeline.findOne({ _id: rawPipelineId, ...tf, isActive: true }).lean();
       if (!pipeline) return next(err('Invalid or inactive pipeline', 400));
       validatedPipelineId = pipeline._id.toString();
+      validatedPipeline   = pipeline;
     }
 
     const doc = await Integration.findOne({ ...tf, provider: 'google_sheets' });
@@ -931,39 +946,111 @@ exports.saveSheetConfig = async (req, res, next) => {
     if (existingIdx >= 0) existingSheets[existingIdx] = newEntry;
     else                  existingSheets.push(newEntry);
 
-    // ── Upsert PipelineMapping for syncMode='single' only ──────────────────
-    // syncMode='all' stores the pipeline in config only — no empty-sheetName mapping.
-    if (preservedPipelineId && syncMode === 'single' && newEntry.sheetName) {
-      await PipelineMapping.findOneAndUpdate(
-        { tenantId: tf.tenantId, spreadsheetId: newEntry.spreadsheetId, sheetName: newEntry.sheetName },
+    // ── Persist: mapping upsert + config save + (explicit pipeline) lead/mapping updates ──
+    // Every write receives `session` when one is given, so they can share one transaction.
+    const persist = async (session) => {
+      const sess = session ? { session } : {};
+
+      // Upsert PipelineMapping for syncMode='single' only.
+      // syncMode='all' stores the pipeline in config only — no empty-sheetName mapping.
+      if (preservedPipelineId && syncMode === 'single' && newEntry.sheetName) {
+        await PipelineMapping.findOneAndUpdate(
+          { tenantId: tf.tenantId, spreadsheetId: newEntry.spreadsheetId, sheetName: newEntry.sheetName },
+          {
+            $set: {
+              tenantId:      tf.tenantId,
+              spreadsheetId: newEntry.spreadsheetId,
+              sheetName:     newEntry.sheetName,
+              pipelineId:    preservedPipelineId,
+              isActive:      true,
+            },
+          },
+          { upsert: true, new: true, ...sess }
+        );
+      }
+
+      const updatedDoc = await Integration.findOneAndUpdate(
+        { ...tf, provider: 'google_sheets' },
         {
           $set: {
-            tenantId:      tf.tenantId,
-            spreadsheetId: newEntry.spreadsheetId,
-            sheetName:     newEntry.sheetName,
-            pipelineId:    preservedPipelineId,
-            isActive:      true,
+            // Legacy single-sheet fields — kept for backward compat; always reflects last connected
+            'config.spreadsheetId':    newEntry.spreadsheetId,
+            'config.syncMode':         syncMode,
+            'config.sheetName':        newEntry.sheetName,
+            'config.selectedFileName': newEntry.displayName,
+            // Multi-sheet array — canonical source of truth
+            'config.spreadsheets':     existingSheets,
           },
         },
-        { upsert: true, new: true }
+        { new: true, ...sess }
       );
-    }
 
-    const updated = await Integration.findOneAndUpdate(
-      { ...tf, provider: 'google_sheets' },
-      {
-        $set: {
-          // Legacy single-sheet fields — kept for backward compat; always reflects last connected
-          'config.spreadsheetId':    newEntry.spreadsheetId,
-          'config.syncMode':         syncMode,
-          'config.sheetName':        newEntry.sheetName,
-          'config.selectedFileName': newEntry.displayName,
-          // Multi-sheet array — canonical source of truth
-          'config.spreadsheets':     existingSheets,
-        },
-      },
-      { new: true }
-    );
+      // Apply an EXPLICITLY selected pipeline to this spreadsheet's existing leads and
+      // mappings (never on plain config saves). Scoped to tenant + exact spreadsheetId.
+      let moved = 0;
+      if (validatedPipeline) {
+        const applied = await applySheetPipelineSelection({
+          tenantId:      tf.tenantId,
+          spreadsheetId: newEntry.spreadsheetId,
+          pipeline:      validatedPipeline,
+          session,
+        });
+        moved = applied.leadsMoved;
+      }
+      return { updatedDoc, moved };
+    };
+
+    let persisted;
+    if (!validatedPipeline) {
+      // Plain config save (connect flow etc.): unchanged sequence.
+      persisted = await persist(null);
+    } else {
+      // Explicit pipeline selection: config + mapping + leads change together or not at all.
+      // Transaction failure: MongoDB rolled everything back, so this statement is accurate.
+      const applyFailed = () => err('Could not apply the pipeline. No changes were saved.', 500);
+      // Standalone fallback failure: mapping/lead writes may already have been applied,
+      // so we must NOT claim that nothing was saved.
+      const partiallyApplied = () => err('Pipeline selection could not be fully applied. Please contact support before retrying.', 500);
+
+      // Standalone-MongoDB fallback only: put the previous spreadsheet config back.
+      const restorePreviousConfig = async () => {
+        const c = doc.config || {};
+        const $set = {}, $unset = {};
+        for (const k of ['spreadsheetId', 'syncMode', 'sheetName', 'selectedFileName', 'spreadsheets']) {
+          if (c[k] === undefined) $unset[`config.${k}`] = '';
+          else                    $set[`config.${k}`]   = c[k];
+        }
+        await Integration.findOneAndUpdate(
+          { ...tf, provider: 'google_sheets' },
+          { ...(Object.keys($set).length ? { $set } : {}), ...(Object.keys($unset).length ? { $unset } : {}) }
+        );
+      };
+
+      let session = null;
+      try {
+        session = await mongoose.startSession();
+        await session.withTransaction(async () => { persisted = await persist(session); });
+      } catch (txErr) {
+        if (!isTransactionUnsupported(txErr)) {
+          // Any other failure: the transaction has been rolled back. Never fall back.
+          console.error('[GSheets] Pipeline selection failed (rolled back):', txErr.message);
+          throw applyFailed();
+        }
+        // Standalone dev database (no transactions): original sequential behaviour.
+        try {
+          persisted = await persist(null);
+        } catch (fbErr) {
+          console.error('[GSheets] Pipeline selection failed (standalone fallback):', fbErr.message);
+          try { await restorePreviousConfig(); }
+          catch (restoreErr) { console.error('[GSheets] Restoring previous sheet config failed:', restoreErr.message); }
+          throw partiallyApplied();
+        }
+      } finally {
+        if (session) await session.endSession();
+      }
+    }
+    const updated    = persisted.updatedDoc;
+    const leadsMoved = persisted.moved;
 
     await logAction({
       action:      'integration_updated',
@@ -972,7 +1059,10 @@ exports.saveSheetConfig = async (req, res, next) => {
       tenantId:    tf.tenantId,
       resourceId:  'google_sheets',
       resourceType:'integration',
-      details:     { spreadsheetId, syncMode, sheetName: syncMode === 'single' ? sheetName : '(all tabs)', selectedFileName },
+      details:     {
+        spreadsheetId, syncMode, sheetName: syncMode === 'single' ? sheetName : '(all tabs)', selectedFileName,
+        ...(validatedPipeline ? { pipelineId: validatedPipelineId, leadsMoved } : {}),
+      },
       req,
     });
 
@@ -1000,7 +1090,7 @@ exports.saveSheetConfig = async (req, res, next) => {
       console.error('[DriveWatch] Watch setup failed for', newEntry.spreadsheetId, ':', watchErr.message);
     }
 
-    res.json({ success: true, data: toClient(updated), message: 'Sheet configuration saved' });
+    res.json({ success: true, data: toClient(updated), message: 'Sheet configuration saved', leadsMoved });
   } catch (e) { next(e); }
 };
 
