@@ -67,6 +67,11 @@ const leadSchema = new mongoose.Schema({
   convertedClientId: { type: mongoose.Schema.Types.ObjectId, ref: 'Client' }, // set when won → client
   tags: [String],
 
+  // Original lead date from the source (Google Sheet `created_time` column).
+  // Display date only — createdAt remains the CRM record creation/import time and is never overwritten.
+  // null → UI falls back to createdAt. Set only by the Google Sheets sync paths.
+  leadDate: { type: Date, default: null },
+
   // Dynamic fields from external sources (Google Sheet columns, Meta form answers, etc.)
   // Stores any column that does not map to a standard Lead field.
   // Shape varies per import source — never contains credentials or security tokens.

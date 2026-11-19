@@ -22,6 +22,7 @@ const Pipeline        = require('../models/Pipeline');
 const PipelineMapping = require('../models/PipelineMapping');
 const { decrypt }     = require('../utils/encryption');
 const { resolveLeadPipeline } = require('../utils/pipelineRouting');
+const { leadDateFromCustomFields, backfillLeadDate } = require('../utils/leadDate');
 
 // ── HMAC verification ──────────────────────────────────────────────────────────
 function verifyHmac(secret, rawBody, signature) {
@@ -205,14 +206,21 @@ exports.receiveLeads = async (req, res) => {
             { $set: setFields },
             { new: false, upsert: false }   // never create; never touch status/notes/etc.
           );
-          if (updated) results.updated++;
-          else         results.notFound++;
+          if (updated) {
+            results.updated++;
+            // Fill the original sheet date only if the lead has none yet (never overwrites)
+            await backfillLeadDate(Lead, { tenantId: workspaceId, externalLeadId }, customFields);
+          } else {
+            results.notFound++;
+          }
           continue;
         }
 
         // ── NORMAL SYNC: duplicate check then create ───────────────────────────
         const exists = await Lead.exists({ tenantId: workspaceId, externalLeadId });
         if (exists) {
+          // Existing lead re-sent: fill the original sheet date only if still empty
+          await backfillLeadDate(Lead, { tenantId: workspaceId, externalLeadId }, customFields);
           results.duplicates++;
           continue;
         }
@@ -249,6 +257,8 @@ exports.receiveLeads = async (req, res) => {
           ...attribution,
           // Pipeline assignment (null-safe — existing leads without pipelines still work)
           ...pipelineAssignment,
+          // Original lead date from the sheet's created_time column (null → UI falls back to createdAt)
+          leadDate: leadDateFromCustomFields(customFields),
         });
 
         results.created++;

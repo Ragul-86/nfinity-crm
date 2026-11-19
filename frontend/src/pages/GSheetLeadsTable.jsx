@@ -545,7 +545,7 @@ export default function GSheetLeadsTable() {
 
                     {/* Created */}
                     <td className="px-3 py-3 text-xs text-muted-foreground whitespace-nowrap">
-                      {format(new Date(lead.createdAt), 'MMM d, yyyy')}
+                      {format(new Date(lead.leadDate || lead.createdAt), 'MMM d, yyyy')}
                     </td>
 
                     {/* Actions */}

@@ -12,6 +12,7 @@ const { isValidPhone, resolvePhone } = require('../utils/phoneUtils');
 const { getPrimaryClientUrl } = require('../utils/corsConfig');
 const { resolveLeadPipeline } = require('../utils/pipelineRouting');
 const { applySheetPipelineSelection } = require('../utils/sheetPipelineSync');
+const { leadDateFromCustomFields, backfillLeadDate } = require('../utils/leadDate');
 
 // ── Inline error helper (no AppError class needed) ───────────────────────────
 const err = (msg, code = 400) => Object.assign(new Error(msg), { statusCode: code });
@@ -1720,6 +1721,8 @@ exports.syncGoogleSheet = async (req, res, next) => {
           });
           if (byKey) {
             syncDiag(`SKIP_EXISTING tab="${tabName}" R=${rowIndex} key="${externalLeadId}"`);
+            // Backfill the original sheet date on an existing lead that has none yet.
+            if (!byKey.leadDate) await backfillLeadDate(Lead, { _id: byKey._id, tenantId: tf.tenantId }, customFields);
             skipped++; continue;
           }
 
@@ -1774,6 +1777,8 @@ exports.syncGoogleSheet = async (req, res, next) => {
             createdBy: req.user._id,
             ...attribution,
             ...(pipelineId ? { pipelineId, stageId, stageName, stageType } : {}),
+            // Original lead date from the sheet's created_time column (null → UI falls back to createdAt)
+            leadDate: leadDateFromCustomFields(customFields),
           });
           syncDiag(`CREATED tab="${tabName}" R=${rowIndex} key="${externalLeadId}"`);
           created++;

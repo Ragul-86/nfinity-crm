@@ -22,6 +22,7 @@ const { decryptFields, encryptFields } = require('../utils/encryption');
 const { createDriveWatch, stopDriveWatch } = require('../utils/driveWatch');
 const { isValidPhone, resolvePhone } = require('../utils/phoneUtils');
 const { resolveLeadPipeline } = require('../utils/pipelineRouting');
+const { leadDateFromCustomFields, backfillLeadDate } = require('../utils/leadDate');
 
 // ─── Sensitive fields for google_sheets provider ──────────────────────────────
 const GS_SENSITIVE = ['accessToken', 'refreshToken'];
@@ -294,7 +295,11 @@ async function syncTab(accessToken, tenantId, spreadsheetId, tabName, savedPipel
         externalSource,
         $or: [{ spreadsheetId }, { spreadsheetId: { $in: [null, ''] } }],
       });
-      if (byKey) { skipped++; continue; }
+      if (byKey) {
+        // Backfill the original sheet date on an existing lead that has none yet.
+        if (!byKey.leadDate) await backfillLeadDate(Lead, { _id: byKey._id, tenantId }, customFields);
+        skipped++; continue;
+      }
 
       // Step 1b: tombstone check — STRICT: only tombstones for this exact spreadsheet.
       // We intentionally do NOT use a legacy fallback ($in:[null,'']) here.
@@ -347,6 +352,8 @@ async function syncTab(accessToken, tenantId, spreadsheetId, tabName, savedPipel
         createdBy: null, // scheduler — no logged-in user
         ...attribution,
         ...(pipelineId ? { pipelineId, stageId, stageName, stageType } : {}),
+        // Original lead date from the sheet's created_time column (null → UI falls back to createdAt)
+        leadDate: leadDateFromCustomFields(customFields),
       });
       created++;
 
